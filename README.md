@@ -2,16 +2,19 @@
 
 `gptwrap` exposes the ChatGPT and Gemini web apps through a small OpenAI-style HTTP API.
 
-It uses Playwright to control a logged-in browser session, submits prompts through the normal web UI, reads the generated response from the page, and returns it using familiar `/v1/chat/completions` response shapes.
+It uses Playwright to control a logged-in browser session, submits prompts through the normal web UI, reads generated responses from the page, and returns them using familiar `/v1/chat/completions` response shapes.
 
 > [!IMPORTANT]
-> This project is a web UI wrapper, not an official OpenAI or Google API client. Web interfaces can change without notice and break selectors or behaviour. Use it only with accounts and services you are authorized to automate, and follow the relevant service terms, limits, and policies.
+> This is a web UI wrapper, not an official OpenAI or Google API client. Web interfaces can change without notice and break selectors or behaviour. Use it only with accounts and services you are authorized to automate, and follow the relevant service terms, limits, and policies.
 
 ## Features
 
-- ChatGPT and Gemini support
+- ChatGPT and Gemini web-app support
 - OpenAI-style `POST /v1/chat/completions`
-- `system`, `developer`, `user`, `assistant`, and `tool` message handling
+- `system`, `developer`, `user`, `assistant`, and `tool` messages
+- Model-aware provider routing
+- Best-effort model selection in the provider UI
+- Built-in model aliases plus custom aliases through `MODEL_MAP`
 - Live `stream: true` Server-Sent Events (SSE)
 - OpenAI-style streamed chunks and `[DONE]`
 - `stream_options.include_usage`
@@ -93,7 +96,143 @@ curl http://127.0.0.1:3000/v1/chat/completions \
   }'
 ```
 
-Use `"model": "gemini"` to route the request to Gemini. You can also explicitly set `"provider": "chatgpt"` or `"provider": "gemini"`.
+Use `"model": "gemini"` to route to Gemini. You can also explicitly set `"provider": "chatgpt"` or `"provider": "gemini"`.
+
+## Model selection
+
+Unlike the first version of gptwrap, the `model` field is no longer just a routing label. For selectable model aliases, gptwrap opens the provider's model picker and tries to select the requested model before sending the prompt.
+
+Built-in aliases currently include:
+
+```text
+chatgpt
+chatgpt-auto
+gpt-5.6
+gpt-5.6-sol
+gpt-5.6-luna
+gpt-5.6-pro
+chatgpt-instant
+chatgpt-thinking
+
+gemini
+gemini-auto
+gemini-fast
+gemini-pro
+gemini-thinking
+```
+
+The generic `chatgpt`, `chatgpt-auto`, `gemini`, and `gemini-auto` aliases do not force a UI model change. They use whichever model/configuration is currently selected in that provider.
+
+Example:
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.6-sol",
+    "messages": [
+      {"role": "user", "content": "Write a Roblox inventory module."}
+    ]
+  }'
+```
+
+Model availability still depends on your account, plan, region, and what the provider currently exposes in its web UI. An alias being listed by gptwrap does not magically grant access to that model. Humanity has not yet discovered a JSON property that upgrades subscriptions.
+
+### Unknown model IDs
+
+Unknown IDs are not immediately rejected. gptwrap infers the provider and generates several likely UI labels from the requested ID.
+
+For example:
+
+```json
+{
+  "model": "gemini/some-new-model",
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
+}
+```
+
+will route to Gemini and try labels based on `some-new-model`.
+
+Provider prefixes are supported using `:` or `/`, for example:
+
+```text
+chatgpt:my-model
+chatgpt/my-model
+gemini:my-model
+gemini/my-model
+```
+
+### Custom model aliases
+
+Use `MODEL_MAP` to add or override aliases without editing `index.js`.
+
+`MODEL_MAP` is a JSON object. Each key is the API-facing model ID.
+
+Example on Linux/macOS:
+
+```bash
+export MODEL_MAP='{
+  "my-fast-gpt": {
+    "provider": "chatgpt",
+    "labels": ["Instant", "Fast"]
+  },
+  "my-deep-gemini": {
+    "provider": "gemini",
+    "labels": ["Deep Think", "Thinking"]
+  }
+}'
+node index.js
+```
+
+Compact version:
+
+```bash
+MODEL_MAP='{"my-gpt":{"provider":"chatgpt","labels":["Instant"]}}' node index.js
+```
+
+A shorthand string value is also accepted:
+
+```bash
+MODEL_MAP='{"my-gpt":"Instant"}' node index.js
+```
+
+In shorthand form, the provider is inferred from the alias name.
+
+Supported custom fields:
+
+```json
+{
+  "my-model": {
+    "provider": "chatgpt",
+    "labels": ["UI label to try first", "fallback label"],
+    "selectable": true
+  }
+}
+```
+
+`labels`, `uiLabels`, `label`, and `uiLabel` are accepted.
+
+### Strict model selection
+
+By default, model selection is best effort. If gptwrap cannot find the model picker or requested option, it logs a warning and continues using the current web UI model.
+
+To fail the request instead:
+
+```bash
+MODEL_STRICT=1 node index.js
+```
+
+This is useful when silently falling back to another model would be worse than returning an error.
+
+### List models
+
+```bash
+curl http://127.0.0.1:3000/v1/models
+```
+
+The response includes built-in aliases plus aliases loaded through `MODEL_MAP`.
 
 ## Streaming
 
@@ -117,7 +256,7 @@ A stream ends with:
 data: [DONE]
 ```
 
-To receive a final usage chunk, use:
+To receive a final usage chunk:
 
 ```json
 {
@@ -257,6 +396,9 @@ Authorization: Bearer <TOOL_SECRET>
 | `CHROME_PROFILE` | empty | Chrome profile name such as `Default` or `Profile 1` |
 | `CHATGPT_URL` | `https://chatgpt.com/?temporary-chat=true` | ChatGPT page to open |
 | `GEMINI_URL` | `https://gemini.google.com/app` | Gemini page to open |
+| `MODEL_MAP` | empty | JSON object adding or overriding model aliases |
+| `MODEL_STRICT` | `0` | Set to `1` to error when requested model selection fails |
+| `MODEL_SELECT_TIMEOUT` | `6000` | Maximum time to find a requested model option, in ms |
 | `TOOL_ENDPOINT` | empty | Optional HTTP endpoint for automatic tool execution |
 | `TOOL_SECRET` | empty | Optional bearer token for the tool endpoint |
 | `MAX_TOOL_LOOPS` | `8` | Maximum automatic tool-call iterations |
@@ -287,10 +429,12 @@ Using a dedicated gptwrap profile is usually cleaner and safer than sharing your
 Provider selection works like this:
 
 1. If `provider` is explicitly set to `chatgpt` or `gemini`, that provider is used.
-2. Otherwise, a model name containing `gemini` routes to Gemini.
-3. Everything else routes to ChatGPT.
+2. Otherwise, aliases in the model map use their configured provider.
+3. Unknown model IDs containing `gemini` route to Gemini.
+4. Unknown IDs beginning with `gpt-`, common `o...` model-style names, or ChatGPT-prefixed IDs route to ChatGPT.
+5. Everything else defaults to ChatGPT.
 
-`model` is primarily used for routing and response compatibility. gptwrap does not currently control the exact model selected inside each provider's web UI.
+If an explicit `provider` conflicts with a known model alias, model selection fails rather than trying to click a model from the wrong provider.
 
 ## Compatibility notes
 
@@ -300,6 +444,7 @@ Currently supported:
 
 - Chat completions
 - Message roles
+- Model aliases and best-effort web model selection
 - Streaming text
 - Streaming tool calls
 - Tool definitions and `tool_choice`
@@ -312,7 +457,7 @@ Not currently implemented as full API-compatible features:
 - Audio input/output
 - File/document APIs
 - Exact provider-side token usage
-- Exact web-model selection
+- Guaranteed model selection across every provider UI revision
 - Full OpenAI parameter parity such as every sampling/logprob option
 
 Unknown request fields may simply have no effect because the underlying operation is performed through the provider's web interface.
@@ -321,11 +466,15 @@ Unknown request fields may simply have no effect because the underlying operatio
 
 This wrapper depends on DOM selectors and web UI behaviour. ChatGPT or Gemini can change their interface at any time, which may require updating selectors in `PROVIDERS` inside `index.js`.
 
+Model selection is especially UI-dependent. To reduce breakage, gptwrap searches several accessible roles and label variants rather than depending on one exact option selector.
+
 For best reliability:
 
 - Keep `HEADLESS=0` unless you specifically need headless mode
 - Prefer installed Chrome over bundled Chromium
 - Keep requests serialized per provider
+- Use `MODEL_STRICT=1` when choosing the wrong model would be unacceptable
+- Add new aliases through `MODEL_MAP` before changing core code
 - Do not use the same Chrome profile simultaneously in regular Chrome and gptwrap
 - Re-run the login command if a saved session expires
 
@@ -335,19 +484,7 @@ For best reliability:
 curl http://127.0.0.1:3000/health
 ```
 
-Example response:
-
-```json
-{
-  "ok": true,
-  "providers": ["chatgpt", "gemini"],
-  "browser": "real-chrome",
-  "toolExecution": false,
-  "tokenizer": "cl100k_base",
-  "streaming": true,
-  "images": true
-}
-```
+The health response reports streaming, image, and model-selection support and includes the currently registered model aliases.
 
 ## License
 
