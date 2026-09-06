@@ -1,0 +1,18 @@
+{
+  "name": "gptwrap",
+  "version": "1.0.0",
+  "description": "",
+  "main": "web_models_mvp.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1",
+    "js-tiktoken": "^1.0.21",
+    "playwright": "^1.63.0"
+  }
+}
