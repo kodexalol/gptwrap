@@ -12,6 +12,28 @@ const path = require("path");
 const readline = require("readline");
 const crypto = require("crypto");
 
+// ---------- tiny .env loader (keeps setup dependency-free) ----------
+function loadEnvFile(file = path.resolve(process.cwd(), ".env")) {
+  if (!fs.existsSync(file)) return;
+  try {
+    for (const raw of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const i = line.indexOf("=");
+      if (i <= 0) continue;
+      const key = line.slice(0, i).trim();
+      let value = line.slice(i + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (!(key in process.env)) process.env[key] = value;
+    }
+  } catch (e) {
+    console.warn(`[env] could not read ${file}: ${e.message}`);
+  }
+}
+loadEnvFile();
+
 let _enc = null;
 try { _enc = require("js-tiktoken").getEncoding("cl100k_base"); } catch {}
 
@@ -23,6 +45,7 @@ function countTokens(text) {
 }
 
 // ---------- config ----------
+const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3000);
 const HEADLESS = process.env.HEADLESS === "1";
 const PROFILE_ROOT = path.resolve(process.env.PROFILE_ROOT || "./profiles");
@@ -39,10 +62,17 @@ const STREAM_STABLE_MS = Number(process.env.STREAM_STABLE_MS || 1300);
 const MODEL_STRICT = process.env.MODEL_STRICT === "1";
 const MODEL_SELECT_TIMEOUT = Number(process.env.MODEL_SELECT_TIMEOUT || 6500);
 const MODEL_MAP_RAW = process.env.MODEL_MAP || "";
+const MODEL_DISCOVERY_TTL_MS = Number(process.env.MODEL_DISCOVERY_TTL_MS || 10 * 60 * 1000);
+const AUTO_DISCOVER_MODELS = process.env.AUTO_DISCOVER_MODELS !== "0";
+const AUTO_RECOVER = process.env.AUTO_RECOVER !== "0";
+const RECOVERY_RETRIES = Math.max(0, Number(process.env.RECOVERY_RETRIES || 1));
 const USE_REAL_CHROME = process.env.USE_REAL_CHROME !== "0";
 const CHROME_PATH = process.env.CHROME_PATH || "";
 const CHROME_USER_DATA_DIR = process.env.CHROME_USER_DATA_DIR || "";
 const CHROME_PROFILE = process.env.CHROME_PROFILE || "";
+const NO_SANDBOX = process.env.NO_SANDBOX === "1";
+const API_KEY = process.env.API_KEY || "";
+const ALLOW_UNAUTHENTICATED = process.env.ALLOW_UNAUTHENTICATED === "1";
 
 const COMMON_FILE_INPUTS = [
   'input[type="file"][accept*="image"]',
@@ -62,8 +92,8 @@ const COMMON_MODEL_OPENERS = [
   'button[data-testid*="model" i]',
   'button[aria-label*="model" i][aria-haspopup]',
   '[role="button"][aria-label*="model" i][aria-haspopup]',
-  'button[aria-haspopup="menu"]',
   'button[aria-haspopup="listbox"]',
+  'button[aria-haspopup="menu"]',
 ];
 const COMMON_SEND = [
   'button[data-testid*="send" i]',
@@ -91,11 +121,21 @@ const COMMON_GENERATING = [
   '[aria-busy="true"]',
 ];
 
+const BASE_CAPABILITIES = Object.freeze({
+  chat_completions: true,
+  streaming: true,
+  tool_calling: true,
+  image_input: true,
+  model_selection: true,
+  model_discovery: true,
+});
+
 // ---------- providers ----------
 const PROVIDERS = {
   chatgpt: {
     title: "ChatGPT",
     url: process.env.CHATGPT_URL || "https://chatgpt.com/?temporary-chat=true",
+    capabilities: { ...BASE_CAPABILITIES },
     input: [
       "#prompt-textarea",
       '[data-testid="prompt-textarea"]',
@@ -103,11 +143,7 @@ const PROVIDERS = {
       'textarea[name="prompt-textarea"]',
       ...COMMON_INPUT,
     ],
-    send: [
-      "#composer-submit-button",
-      'button[data-testid="send-button"]',
-      ...COMMON_SEND,
-    ],
+    send: ["#composer-submit-button", 'button[data-testid="send-button"]', ...COMMON_SEND],
     assistant: [
       '[data-message-author-role="assistant"]',
       '[data-testid^="conversation-turn-"] .markdown',
@@ -120,32 +156,27 @@ const PROVIDERS = {
       ...COMMON_GENERATING,
     ],
     fileInputs: COMMON_FILE_INPUTS,
-    uploadOpeners: [
-      'button[data-testid*="attach" i]',
-      ...COMMON_UPLOAD_OPENERS,
-    ],
+    uploadOpeners: ['button[data-testid*="attach" i]', ...COMMON_UPLOAD_OPENERS],
     modelOpeners: [
       'button[data-testid="model-switcher-dropdown-button"]',
       'button[data-testid*="model-switcher" i]',
       ...COMMON_MODEL_OPENERS,
     ],
+    discoveryKeywords: ["gpt", "instant", "thinking", "think", "pro", "luna", "sol", "o1", "o3", "o4"],
     cleanup: (t) => String(t || "").replace(/^ChatGPT said:\s*/i, "").trim(),
   },
 
   gemini: {
     title: "Gemini",
     url: process.env.GEMINI_URL || "https://gemini.google.com/app",
+    capabilities: { ...BASE_CAPABILITIES },
     input: [
       "div.ql-editor",
       'rich-textarea [contenteditable="true"]',
       '[aria-label="Enter a prompt here"]',
       ...COMMON_INPUT,
     ],
-    send: [
-      'button[aria-label="Send message"]',
-      ".send-button",
-      ...COMMON_SEND,
-    ],
+    send: ['button[aria-label="Send message"]', ".send-button", ...COMMON_SEND],
     assistant: [
       "model-response",
       "message-content",
@@ -158,62 +189,47 @@ const PROVIDERS = {
     fileInputs: COMMON_FILE_INPUTS,
     uploadOpeners: COMMON_UPLOAD_OPENERS,
     modelOpeners: COMMON_MODEL_OPENERS,
+    discoveryKeywords: ["gemini", "flash", "pro", "fast", "thinking", "deep think"],
     cleanup: (t) => String(t || "").replace(/^Gemini said\s*/i, "").trim(),
   },
 
   claude: {
     title: "Claude",
     url: process.env.CLAUDE_URL || "https://claude.ai/new",
+    capabilities: { ...BASE_CAPABILITIES },
     input: [
       'div.ProseMirror[contenteditable="true"]',
       '[data-testid*="composer" i] [contenteditable="true"]',
       '[contenteditable="true"][data-placeholder]',
       ...COMMON_INPUT,
     ],
-    send: [
-      'button[aria-label*="Send message" i]',
-      'button[data-testid*="send" i]',
-      ...COMMON_SEND,
-    ],
+    send: ['button[aria-label*="Send message" i]', 'button[data-testid*="send" i]', ...COMMON_SEND],
     assistant: [
       '[data-testid*="assistant" i]',
       '[data-is-streaming] [class*="font"]',
-      '.font-claude-response',
+      ".font-claude-response",
       'main [class*="prose"]',
       ...COMMON_ASSISTANT,
     ],
-    generating: [
-      '[data-is-streaming="true"]',
-      ...COMMON_GENERATING,
-    ],
+    generating: ['[data-is-streaming="true"]', ...COMMON_GENERATING],
     fileInputs: COMMON_FILE_INPUTS,
-    uploadOpeners: [
-      'button[aria-label*="Add content" i]',
-      'button[aria-label*="Attach" i]',
-      ...COMMON_UPLOAD_OPENERS,
-    ],
-    modelOpeners: [
-      'button[data-testid*="model" i]',
-      'button[aria-label*="model" i]',
-      ...COMMON_MODEL_OPENERS,
-    ],
+    uploadOpeners: ['button[aria-label*="Add content" i]', 'button[aria-label*="Attach" i]', ...COMMON_UPLOAD_OPENERS],
+    modelOpeners: ['button[data-testid*="model" i]', 'button[aria-label*="model" i]', ...COMMON_MODEL_OPENERS],
+    discoveryKeywords: ["claude", "sonnet", "opus", "haiku", "fable"],
     cleanup: (t) => String(t || "").replace(/^Claude(?: said)?:?\s*/i, "").trim(),
   },
 
   grok: {
     title: "Grok",
     url: process.env.GROK_URL || "https://grok.com/",
+    capabilities: { ...BASE_CAPABILITIES },
     input: [
       'textarea[placeholder*="Ask" i]',
       'textarea[placeholder*="Grok" i]',
       '[contenteditable="true"][role="textbox"]',
       ...COMMON_INPUT,
     ],
-    send: [
-      'button[aria-label*="Submit" i]',
-      'button[aria-label*="Send" i]',
-      ...COMMON_SEND,
-    ],
+    send: ['button[aria-label*="Submit" i]', 'button[aria-label*="Send" i]', ...COMMON_SEND],
     assistant: [
       '[data-testid*="assistant" i]',
       '[data-message-author-role="assistant"]',
@@ -223,22 +239,16 @@ const PROVIDERS = {
     ],
     generating: COMMON_GENERATING,
     fileInputs: COMMON_FILE_INPUTS,
-    uploadOpeners: [
-      'button[aria-label*="Attach" i]',
-      'button[aria-label*="Add" i]',
-      ...COMMON_UPLOAD_OPENERS,
-    ],
-    modelOpeners: [
-      'button[aria-label*="model" i]',
-      'button[data-testid*="model" i]',
-      ...COMMON_MODEL_OPENERS,
-    ],
+    uploadOpeners: ['button[aria-label*="Attach" i]', 'button[aria-label*="Add" i]', ...COMMON_UPLOAD_OPENERS],
+    modelOpeners: ['button[aria-label*="model" i]', 'button[data-testid*="model" i]', ...COMMON_MODEL_OPENERS],
+    discoveryKeywords: ["grok", "reasoning", "thinking", "think", "fast"],
     cleanup: (t) => String(t || "").replace(/^Grok(?: said)?:?\s*/i, "").trim(),
   },
 
   deepseek: {
     title: "DeepSeek",
     url: process.env.DEEPSEEK_URL || "https://chat.deepseek.com/",
+    capabilities: { ...BASE_CAPABILITIES },
     input: [
       "#chat-input",
       'textarea[placeholder*="Message" i]',
@@ -246,11 +256,7 @@ const PROVIDERS = {
       '[contenteditable="true"][role="textbox"]',
       ...COMMON_INPUT,
     ],
-    send: [
-      'button[aria-label*="Send" i]',
-      'button[class*="send" i]',
-      ...COMMON_SEND,
-    ],
+    send: ['button[aria-label*="Send" i]', 'button[class*="send" i]', ...COMMON_SEND],
     assistant: [
       '[data-role="assistant"]',
       '[data-message-author-role="assistant"]',
@@ -260,16 +266,9 @@ const PROVIDERS = {
     ],
     generating: COMMON_GENERATING,
     fileInputs: COMMON_FILE_INPUTS,
-    uploadOpeners: [
-      'button[aria-label*="Upload" i]',
-      'button[aria-label*="Attach" i]',
-      ...COMMON_UPLOAD_OPENERS,
-    ],
-    modelOpeners: [
-      'button[aria-label*="mode" i]',
-      'button[aria-label*="model" i]',
-      ...COMMON_MODEL_OPENERS,
-    ],
+    uploadOpeners: ['button[aria-label*="Upload" i]', 'button[aria-label*="Attach" i]', ...COMMON_UPLOAD_OPENERS],
+    modelOpeners: ['button[aria-label*="mode" i]', 'button[aria-label*="model" i]', ...COMMON_MODEL_OPENERS],
+    discoveryKeywords: ["deepseek", "v4", "instant", "expert", "vision", "reasoner", "chat"],
     cleanup: (t) => String(t || "").replace(/^DeepSeek(?: said)?:?\s*/i, "").trim(),
   },
 };
@@ -370,13 +369,14 @@ function parseCustomModelMap(raw) {
 }
 
 const MODEL_MAP = { ...DEFAULT_MODEL_MAP, ...parseCustomModelMap(MODEL_MAP_RAW) };
+const DISCOVERED_MODEL_MAP = {};
+const DISCOVERY_CACHE = new Map();
 
 function stripProviderPrefix(model) {
   const raw = String(model || "").trim();
   const names = PROVIDER_NAMES.join("|");
   return raw.replace(new RegExp(`^(${names})[:/]`, "i"), "");
 }
-
 function modelLabelGuesses(model) {
   const raw = stripProviderPrefix(model);
   if (!raw) return [];
@@ -384,46 +384,94 @@ function modelLabelGuesses(model) {
   const title = spaced.replace(/\b([a-z])/g, (m) => m.toUpperCase());
   return uniqueStrings([raw, spaced, title]);
 }
-
 function resolveModel(model) {
   const requested = String(model || "chatgpt").trim() || "chatgpt";
   const key = requested.toLowerCase();
-  const known = MODEL_MAP[key];
+  const known = DISCOVERED_MODEL_MAP[key] || MODEL_MAP[key];
   if (known) {
     const labels = uniqueStrings(known.uiLabels || []);
     return {
       id: requested, key, provider: known.provider, uiLabels: labels,
-      selectable: known.selectable !== false && labels.length > 0, known: true,
+      selectable: known.selectable !== false && labels.length > 0,
+      known: true, discovered: Boolean(known.discovered),
     };
   }
   const provider = inferProviderFromModel(requested);
   const uiLabels = modelLabelGuesses(requested);
-  return { id: requested, key, provider, uiLabels, selectable: uiLabels.length > 0, known: false };
+  return { id: requested, key, provider, uiLabels, selectable: uiLabels.length > 0, known: false, discovered: false };
 }
-
-function publicModels() {
-  return Object.entries(MODEL_MAP).map(([id, cfg]) => ({
-    id, object: "model", owned_by: cfg.provider, provider: cfg.provider,
-    selectable: cfg.selectable !== false && (cfg.uiLabels || []).length > 0,
-  }));
+function modelCapabilities(provider) {
+  return { ...(PROVIDERS[provider]?.capabilities || BASE_CAPABILITIES) };
+}
+function publicModels(providerFilter = "") {
+  const entries = new Map();
+  for (const [id, cfg] of Object.entries(MODEL_MAP)) entries.set(id, { id, cfg });
+  for (const [id, cfg] of Object.entries(DISCOVERED_MODEL_MAP)) entries.set(id, { id, cfg });
+  return [...entries.values()]
+    .filter(({ cfg }) => !providerFilter || cfg.provider === providerFilter)
+    .map(({ id, cfg }) => ({
+      id,
+      object: "model",
+      owned_by: cfg.provider,
+      provider: cfg.provider,
+      selectable: cfg.selectable !== false && (cfg.uiLabels || []).length > 0,
+      discovered: Boolean(cfg.discovered),
+      label: cfg.label || undefined,
+      capabilities: modelCapabilities(cfg.provider),
+    }));
 }
 
 // ---------- helpers ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function ensureDir(dir) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }
-
 function browserLabel() {
   if (CHROME_USER_DATA_DIR) return `real-chrome-profile (${CHROME_PROFILE || "Default"})`;
+  if (CHROME_PATH) return `custom-chrome (${CHROME_PATH})`;
   if (USE_REAL_CHROME) return "real-chrome";
   return "bundled-chromium";
 }
-
 function getProvider(body) {
   const explicit = String(body?.provider || "").toLowerCase();
   if (PROVIDERS[explicit]) return explicit;
   return resolveModel(body?.model).provider;
 }
+function isLoopbackHost(host) {
+  return ["127.0.0.1", "localhost", "::1"].includes(String(host).toLowerCase());
+}
+function timingSafeStringEqual(a, b) {
+  const aa = Buffer.from(String(a || ""));
+  const bb = Buffer.from(String(b || ""));
+  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
+}
+function requestApiKey(req) {
+  const auth = String(req.headers.authorization || "");
+  if (/^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, "").trim();
+  return String(req.headers["x-api-key"] || "").trim();
+}
+function authMiddleware(req, res, next) {
+  if (!API_KEY) return next();
+  if (timingSafeStringEqual(requestApiKey(req), API_KEY)) return next();
+  res.status(401).json({
+    error: {
+      message: "Invalid or missing API key",
+      type: "authentication_error",
+    },
+  });
+}
+function markError(err, { safeToRetry, stage } = {}) {
+  const e = err instanceof Error ? err : new Error(String(err));
+  if (safeToRetry !== undefined) e.safeToRetry = safeToRetry;
+  if (stage) e.stage = stage;
+  return e;
+}
+function shouldRetryError(err) {
+  if (err?.safeToRetry === true) return true;
+  if (err?.safeToRetry === false) return false;
+  return /Could not find UI element|Target page.*closed|Target closed|Execution context was destroyed|frame was detached|net::ERR_|Navigation failed/i
+    .test(String(err?.message || err || ""));
+}
 
+// ---------- message/content ----------
 function contentPartText(part) {
   if (typeof part === "string") return part;
   if (!part || typeof part !== "object") return "";
@@ -464,7 +512,6 @@ function extractImages(messages = []) {
   }
   return out;
 }
-
 function serializeMessage(m) {
   const text = normalizeContent(m.content);
   if (m.role === "tool") {
@@ -482,7 +529,6 @@ function serializeMessage(m) {
   }
   return `${String(m.role || "user").toUpperCase()}:\n${text}`.trim();
 }
-
 function buildPrompt(messages = []) {
   const systems = messages.filter((m) => m.role === "system" || m.role === "developer");
   const rest = messages.filter((m) => m.role !== "system" && m.role !== "developer");
@@ -607,6 +653,9 @@ function profileDirFor(provider) {
   return path.join(PROFILE_ROOT, provider);
 }
 function launchOptions(headless) {
+  if (process.platform === "linux" && !headless && !process.env.DISPLAY) {
+    throw new Error("No DISPLAY is available. On a Linux VPS run scripts/vps-display.sh and set DISPLAY=:99, or use HEADLESS=1 after logging in.");
+  }
   const opts = {
     headless,
     viewport: { width: 1280, height: 900 },
@@ -618,6 +667,7 @@ function launchOptions(headless) {
       "--disable-dev-shm-usage",
     ],
   };
+  if (NO_SANDBOX) opts.args.push("--no-sandbox", "--disable-setuid-sandbox");
   if (CHROME_USER_DATA_DIR && CHROME_PROFILE) opts.args.push(`--profile-directory=${CHROME_PROFILE}`);
   if (CHROME_PATH) opts.executablePath = CHROME_PATH;
   else if (USE_REAL_CHROME) opts.channel = "chrome";
@@ -630,7 +680,7 @@ async function stealthContext(profileDir, headless) {
   try { context = await chromium.launchPersistentContext(profileDir, opts); }
   catch (err) {
     if (!(opts.channel || opts.executablePath)) throw err;
-    console.warn(`[browser] real Chrome failed (${String(err.message).split("\n")[0]}), falling back to bundled Chromium`);
+    console.warn(`[browser] configured Chrome failed (${String(err.message).split("\n")[0]}), falling back to bundled Chromium`);
     const fallback = { ...opts };
     delete fallback.channel; delete fallback.executablePath;
     context = await chromium.launchPersistentContext(profileDir, fallback);
@@ -664,7 +714,7 @@ async function findVisible(page, selectors, timeout = 30000) {
     }
     await sleep(180);
   }
-  throw new Error(`Could not find UI element.\n${uniqueStrings(selectors).join("\n")}`);
+  throw markError(new Error(`Could not find UI element.\n${uniqueStrings(selectors).join("\n")}`), { safeToRetry: true, stage: "prepare" });
 }
 async function anyVisible(page, selectors) {
   for (const sel of uniqueStrings(selectors)) {
@@ -733,19 +783,18 @@ async function exposeFileInput(page, provider) {
 async function attachImages(page, provider, files = []) {
   if (!files.length) return;
   const input = await exposeFileInput(page, provider);
-  if (!input) throw new Error(`${provider}: could not find image/file upload input`);
+  if (!input) throw markError(new Error(`${provider}: could not find image/file upload input`), { safeToRetry: true, stage: "prepare" });
   try { await input.setInputFiles(files); }
   catch {
     for (const file of files) {
       const one = await exposeFileInput(page, provider);
-      if (!one) throw new Error(`${provider}: upload input disappeared`);
+      if (!one) throw markError(new Error(`${provider}: upload input disappeared`), { safeToRetry: true, stage: "prepare" });
       await one.setInputFiles(file);
       await sleep(350);
     }
   }
   await sleep(700);
 }
-
 async function clickTextOption(page, labels) {
   for (const label of labels) {
     const safe = String(label).trim();
@@ -753,6 +802,7 @@ async function clickTextOption(page, labels) {
     const candidates = [
       page.getByRole("option", { name: safe, exact: true }),
       page.getByRole("menuitem", { name: safe, exact: true }),
+      page.getByRole("radio", { name: safe, exact: true }),
       page.getByRole("button", { name: safe, exact: true }),
       page.getByText(safe, { exact: true }),
     ];
@@ -771,7 +821,7 @@ async function clickTextOption(page, labels) {
 async function selectModel(page, runtime, requestedModel) {
   const model = resolveModel(requestedModel);
   if (model.provider !== runtime.provider) {
-    throw new Error(`Model ${JSON.stringify(requestedModel)} belongs to ${model.provider}, not ${runtime.provider}`);
+    throw markError(new Error(`Model ${JSON.stringify(requestedModel)} belongs to ${model.provider}, not ${runtime.provider}`), { safeToRetry: false, stage: "prepare" });
   }
   if (!model.selectable) return { selected: false, skipped: true, model };
   if (runtime.selectedModelKey === model.key) return { selected: true, cached: true, model };
@@ -799,7 +849,7 @@ async function selectModel(page, runtime, requestedModel) {
 
   if (!selected) {
     const msg = `${runtime.provider}: could not select ${JSON.stringify(requestedModel)}; tried ${model.uiLabels.join(", ")}`;
-    if (MODEL_STRICT) throw new Error(msg);
+    if (MODEL_STRICT) throw markError(new Error(msg), { safeToRetry: true, stage: "prepare" });
     console.warn(`[models] ${msg}; continuing with current UI model`);
     return { selected: false, model };
   }
@@ -807,6 +857,104 @@ async function selectModel(page, runtime, requestedModel) {
   runtime.selectedModelLabel = selected;
   console.log(`[${runtime.provider}] model -> ${selected}`);
   return { selected: true, label: selected, model };
+}
+
+function normalizeModelLabel(s) {
+  return String(s || "").toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, " ").replace(/\s+/g, " ").trim();
+}
+function slugifyModelLabel(label) {
+  return normalizeModelLabel(label).replace(/\s+/g, "-").replace(/[^a-z0-9.-]/g, "").replace(/^-+|-+$/g, "") || "model";
+}
+function looksLikeModelLabel(provider, text) {
+  const s = normalizeModelLabel(text);
+  if (!s || s.length < 2 || s.length > 80) return false;
+  const cfg = PROVIDERS[provider];
+  return (cfg.discoveryKeywords || []).some((k) => s.includes(normalizeModelLabel(k)));
+}
+async function visibleTextCandidates(page) {
+  const selectors = [
+    '[role="option"]',
+    '[role="menuitem"]',
+    '[role="radio"]',
+    '[data-testid*="model" i]',
+    '[aria-label*="model" i]',
+    '[aria-label*="thinking" i]',
+    '[aria-label*="reasoning" i]',
+  ];
+  const out = [];
+  for (const sel of selectors) {
+    try {
+      const nodes = page.locator(sel);
+      const count = Math.min(await nodes.count(), 60);
+      for (let i = 0; i < count; i++) {
+        const node = nodes.nth(i);
+        if (!(await node.isVisible().catch(() => false))) continue;
+        const text = String(await node.innerText().catch(() => "")).trim();
+        const aria = String(await node.getAttribute("aria-label").catch(() => "") || "").trim();
+        if (text) out.push(text);
+        if (aria) out.push(aria);
+      }
+    } catch {}
+  }
+  return uniqueStrings(out);
+}
+function registerDiscoveredModels(provider, labels) {
+  const models = [];
+  const used = new Set();
+  for (const label of labels) {
+    if (!looksLikeModelLabel(provider, label)) continue;
+    const normalized = normalizeModelLabel(label);
+    if (used.has(normalized)) continue;
+    used.add(normalized);
+    const id = `${provider}/${slugifyModelLabel(label)}`;
+    const cfg = {
+      provider,
+      uiLabels: [label],
+      selectable: true,
+      discovered: true,
+      label,
+    };
+    DISCOVERED_MODEL_MAP[id.toLowerCase()] = cfg;
+    models.push({
+      id,
+      object: "model",
+      owned_by: provider,
+      provider,
+      selectable: true,
+      discovered: true,
+      label,
+      capabilities: modelCapabilities(provider),
+    });
+  }
+  return models;
+}
+async function discoverModelsOnPage(page, provider, { force = false } = {}) {
+  const cached = DISCOVERY_CACHE.get(provider);
+  if (!force && cached && Date.now() - cached.at < MODEL_DISCOVERY_TTL_MS) return cached.models;
+
+  const cfg = PROVIDERS[provider];
+  let labels = [];
+  for (const sel of cfg.modelOpeners || []) {
+    try {
+      const openers = page.locator(sel);
+      const count = Math.min(await openers.count(), 4);
+      for (let i = 0; i < count; i++) {
+        const opener = openers.nth(i);
+        if (!(await opener.isVisible().catch(() => false))) continue;
+        await opener.click();
+        await sleep(250);
+        labels.push(...await visibleTextCandidates(page));
+        await page.keyboard.press("Escape").catch(() => {});
+        if (labels.some((x) => looksLikeModelLabel(provider, x))) break;
+      }
+    } catch {}
+    if (labels.some((x) => looksLikeModelLabel(provider, x))) break;
+  }
+
+  labels = uniqueStrings(labels).filter((x) => looksLikeModelLabel(provider, x));
+  const models = registerDiscoveredModels(provider, labels);
+  DISCOVERY_CACHE.set(provider, { at: Date.now(), models });
+  return models;
 }
 
 function deltaFrom(current, emitted) {
@@ -838,7 +986,7 @@ async function waitForResponse(page, provider, previous, onDelta = null) {
     if (onDelta && lastText.startsWith(emitted) && lastText.length > emitted.length) onDelta(lastText.slice(emitted.length));
     return lastText;
   }
-  throw new Error(`${provider}: response timed out`);
+  throw markError(new Error(`${provider}: response timed out`), { safeToRetry: false, stage: "response" });
 }
 async function submitComposer(page, provider, input) {
   for (const sel of PROVIDERS[provider].send) {
@@ -850,16 +998,22 @@ async function submitComposer(page, provider, input) {
   await input.press("Enter");
 }
 async function sendPrompt(page, provider, prompt, imageFiles = [], onDelta = null) {
-  const previous = await getLastResponse(page, provider);
-  const input = await findVisible(page, PROVIDERS[provider].input);
-  if (imageFiles.length) await attachImages(page, provider, imageFiles);
-  await setInput(input, prompt);
-  await sleep(180);
-  await submitComposer(page, provider, input);
-  return waitForResponse(page, provider, previous, onDelta);
+  let submitted = false;
+  try {
+    const previous = await getLastResponse(page, provider);
+    const input = await findVisible(page, PROVIDERS[provider].input);
+    if (imageFiles.length) await attachImages(page, provider, imageFiles);
+    await setInput(input, prompt);
+    await sleep(180);
+    await submitComposer(page, provider, input);
+    submitted = true;
+    return await waitForResponse(page, provider, previous, onDelta);
+  } catch (e) {
+    throw markError(e, { safeToRetry: !submitted, stage: submitted ? "response" : "prepare" });
+  }
 }
 
-// ---------- runtime ----------
+// ---------- runtime / recovery ----------
 class Runtime {
   constructor(provider) {
     this.provider = provider;
@@ -869,6 +1023,9 @@ class Runtime {
     this.using = "";
     this.selectedModelKey = "";
     this.selectedModelLabel = "";
+    this.recoveries = 0;
+    this.lastError = "";
+    this.lastRecoveryAt = null;
   }
   async start(headless = HEADLESS) {
     if (this.context) return;
@@ -894,10 +1051,55 @@ class Runtime {
     await this.page.goto(wantUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     return this.page;
   }
+  async recover(reason = "") {
+    if (!AUTO_RECOVER) return;
+    this.recoveries++;
+    this.lastError = String(reason || "");
+    this.lastRecoveryAt = new Date().toISOString();
+    this.selectedModelKey = "";
+    this.selectedModelLabel = "";
+    console.warn(`[${this.provider}] recovering browser session${reason ? `: ${String(reason).split("\n")[0]}` : ""}`);
+
+    const previousUrl = (() => {
+      try { return this.page && !this.page.isClosed() ? this.page.url() : ""; } catch { return ""; }
+    })();
+
+    if (this.page && !this.page.isClosed()) {
+      try {
+        await this.page.reload({ waitUntil: "domcontentloaded", timeout: 45000 });
+        return;
+      } catch {}
+      try { await this.page.close().catch(() => {}); } catch {}
+      this.page = null;
+    }
+
+    try {
+      if (!this.context) await this.start();
+      this.page = await this.context.newPage();
+      const target = previousUrl && /^https?:/i.test(previousUrl) ? previousUrl : PROVIDERS[this.provider].url;
+      await this.page.goto(target, { waitUntil: "domcontentloaded", timeout: 60000 });
+      return;
+    } catch {}
+
+    await this.close();
+    await this.start();
+    this.page = await this.context.newPage();
+    await this.page.goto(PROVIDERS[this.provider].url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  }
   enqueue(fn) {
     const r = this.queue.then(fn, fn);
     this.queue = r.catch(() => {});
     return r;
+  }
+  status() {
+    return {
+      started: Boolean(this.context),
+      page_open: Boolean(this.page && !this.page.isClosed()),
+      selected_model: this.selectedModelLabel || null,
+      recoveries: this.recoveries,
+      last_error: this.lastError || null,
+      last_recovery_at: this.lastRecoveryAt,
+    };
   }
   async close() {
     try { await this.page?.close().catch(() => {}); } finally { this.page = null; }
@@ -907,6 +1109,25 @@ class Runtime {
   }
 }
 const runtimes = Object.fromEntries(PROVIDER_NAMES.map((p) => [p, new Runtime(p)]));
+
+async function withRecovery(provider, task) {
+  const runtime = runtimes[provider];
+  let lastErr;
+  for (let attempt = 0; attempt <= RECOVERY_RETRIES; attempt++) {
+    try { return await task(attempt); }
+    catch (e) {
+      lastErr = e;
+      runtime.lastError = String(e?.message || e);
+      const mayRetry = AUTO_RECOVER && attempt < RECOVERY_RETRIES && shouldRetryError(e);
+      if (AUTO_RECOVER) await runtime.recover(e?.message || e).catch((recoveryErr) => {
+        console.warn(`[${provider}] recovery failed: ${recoveryErr.message}`);
+      });
+      if (!mayRetry) throw e;
+      console.warn(`[${provider}] retrying request after recoverable pre-send failure (${attempt + 1}/${RECOVERY_RETRIES})`);
+    }
+  }
+  throw lastErr;
+}
 
 // ---------- response shapes ----------
 function makeUsage(promptTokens, completionTokens) {
@@ -938,21 +1159,32 @@ async function completionContext(body) {
   const explicitProvider = String(body.provider || "").toLowerCase();
   const fallbackProvider = PROVIDERS[explicitProvider] ? explicitProvider : "chatgpt";
   const requestedModel = body.model || fallbackProvider;
-  const resolvedModel = resolveModel(requestedModel);
+  let resolvedModel = resolveModel(requestedModel);
   const provider = PROVIDERS[explicitProvider] ? explicitProvider : resolvedModel.provider;
   const runtime = runtimes[provider];
   const page = await runtime.pageFor();
 
   if (PROVIDERS[explicitProvider] && resolvedModel.known && resolvedModel.provider !== provider) {
-    throw new Error(`Requested model ${JSON.stringify(requestedModel)} belongs to ${resolvedModel.provider}, but provider=${provider}`);
+    throw markError(new Error(`Requested model ${JSON.stringify(requestedModel)} belongs to ${resolvedModel.provider}, but provider=${provider}`), { safeToRetry: false, stage: "prepare" });
   }
+
+  if (AUTO_DISCOVER_MODELS && !resolvedModel.known) {
+    await discoverModelsOnPage(page, provider).catch(() => []);
+    resolvedModel = resolveModel(requestedModel);
+  }
+
   const modelForSelection = resolvedModel.provider === provider ? requestedModel : provider;
   await selectModel(page, runtime, modelForSelection);
 
   const messages = body.messages || [];
   const tools = body.tools || [];
   const toolChoice = toolChoiceOf(body);
-  const imageFiles = await materializeImages(extractImages(messages));
+  let imageFiles = [];
+  try {
+    imageFiles = await materializeImages(extractImages(messages));
+  } catch (e) {
+    throw markError(e, { safeToRetry: false, stage: "prepare" });
+  }
   const prompt = [toolPrompt(tools, toolChoice), buildPrompt(messages)].filter(Boolean).join("\n\n");
 
   return { provider, runtime, page, model: requestedModel, messages, tools, toolChoice, imageFiles, prompt };
@@ -967,7 +1199,7 @@ async function runCompletion(body) {
     for (let i = 0; i < MAX_TOOL_LOOPS; i++) {
       const call = parseTool(reply);
       if (!call) return responseObject(ctx.model, reply, makeUsage(promptTokens, completionTokens));
-      if (!validTool(call, ctx.tools)) throw new Error(`Unknown tool: ${call.name}`);
+      if (!validTool(call, ctx.tools)) throw markError(new Error(`Unknown tool: ${call.name}`), { safeToRetry: false });
       if (!TOOL_ENDPOINT) return toolResponse(ctx.model, call, makeUsage(promptTokens, countTokens(JSON.stringify(call))));
       let result;
       try { result = await executeTool(call); } catch (e) { result = { error: e.message }; }
@@ -976,7 +1208,7 @@ async function runCompletion(body) {
       reply = await sendPrompt(ctx.page, ctx.provider, followup);
       completionTokens += countTokens(reply);
     }
-    throw new Error("Maximum tool loops exceeded");
+    throw markError(new Error("Maximum tool loops exceeded"), { safeToRetry: false });
   } finally { cleanupFiles(ctx.imageFiles); }
 }
 
@@ -1019,7 +1251,7 @@ async function runCompletionStream(body, res) {
         sseWrite(res, "[DONE]");
         return;
       }
-      if (!validTool(call, ctx.tools)) throw new Error(`Unknown tool: ${call.name}`);
+      if (!validTool(call, ctx.tools)) throw markError(new Error(`Unknown tool: ${call.name}`), { safeToRetry: false });
       if (!TOOL_ENDPOINT) {
         emitRole();
         const callId = `call_${Date.now()}`;
@@ -1044,8 +1276,38 @@ async function runCompletionStream(body, res) {
       reply = await sendPrompt(ctx.page, ctx.provider, followup);
       completionTokens += countTokens(reply);
     }
-    throw new Error("Maximum tool loops exceeded");
+    throw markError(new Error("Maximum tool loops exceeded"), { safeToRetry: false });
   } finally { cleanupFiles(ctx.imageFiles); }
+}
+
+// ---------- discovery / provider info ----------
+async function discoverProvider(provider, force = true) {
+  if (!PROVIDERS[provider]) throw new Error(`Unknown provider: ${provider}`);
+  const runtime = runtimes[provider];
+  return runtime.enqueue(async () => {
+    const page = await runtime.pageFor();
+    const models = await discoverModelsOnPage(page, provider, { force });
+    return {
+      provider,
+      models,
+      count: models.length,
+      discovered_at: DISCOVERY_CACHE.get(provider)?.at || Date.now(),
+    };
+  });
+}
+function providerInfo(provider) {
+  const cached = DISCOVERY_CACHE.get(provider);
+  return {
+    id: provider,
+    title: PROVIDERS[provider].title,
+    capabilities: modelCapabilities(provider),
+    discovery: {
+      cached: Boolean(cached),
+      count: cached?.models?.length || 0,
+      age_ms: cached ? Math.max(0, Date.now() - cached.at) : null,
+    },
+    runtime: runtimes[provider].status(),
+  };
 }
 
 // ---------- login/server ----------
@@ -1066,23 +1328,68 @@ async function login(provider) {
   await context.close();
   console.log(`${provider} profile saved -> ${dir}`);
 }
+
+function validateExposureConfig() {
+  if (!isLoopbackHost(HOST) && !API_KEY && !ALLOW_UNAUTHENTICATED) {
+    throw new Error(
+      `Refusing to bind to ${HOST} without API_KEY. Set API_KEY in .env, or set ALLOW_UNAUTHENTICATED=1 only if you really intend to expose an unauthenticated gateway.`
+    );
+  }
+}
+
 async function startServer() {
+  validateExposureConfig();
   ensureDir(PROFILE_ROOT); ensureDir(TMP_ROOT);
   const app = express();
+  app.disable("x-powered-by");
   app.use(express.json({ limit: BODY_LIMIT }));
 
   app.get("/health", (req, res) => res.json({
     ok: true,
     providers: PROVIDER_NAMES,
     browser: browserLabel(),
+    host: HOST,
+    auth_required: Boolean(API_KEY),
     toolExecution: Boolean(TOOL_ENDPOINT),
     tokenizer: _enc ? "cl100k_base" : "fallback",
+    auto_recover: AUTO_RECOVER,
+    recovery_retries: RECOVERY_RETRIES,
     streaming: true,
     images: true,
     modelSelection: true,
+    modelDiscovery: true,
   }));
 
-  app.get("/v1/models", (req, res) => res.json({ object: "list", data: publicModels() }));
+  app.use("/v1", authMiddleware);
+
+  app.get("/v1/providers", (req, res) => {
+    res.json({ object: "list", data: PROVIDER_NAMES.map(providerInfo) });
+  });
+
+  app.get("/v1/models", async (req, res) => {
+    const provider = String(req.query.provider || "").toLowerCase();
+    if (provider && !PROVIDERS[provider]) {
+      return res.status(400).json({ error: { message: `Unknown provider: ${provider}` } });
+    }
+    const refresh = ["1", "true", "yes"].includes(String(req.query.refresh || "").toLowerCase());
+    if (refresh) {
+      const targets = provider ? [provider] : PROVIDER_NAMES;
+      const discovery = [];
+      for (const p of targets) {
+        try { discovery.push(await discoverProvider(p, true)); }
+        catch (e) { discovery.push({ provider: p, error: e.message, models: [], count: 0 }); }
+      }
+      return res.json({ object: "list", data: publicModels(provider), discovery });
+    }
+    res.json({ object: "list", data: publicModels(provider) });
+  });
+
+  app.post("/v1/providers/:provider/discover", async (req, res) => {
+    const provider = String(req.params.provider || "").toLowerCase();
+    if (!PROVIDERS[provider]) return res.status(404).json({ error: { message: `Unknown provider: ${provider}` } });
+    try { res.json(await discoverProvider(provider, true)); }
+    catch (e) { res.status(500).json({ error: { message: e.message, provider } }); }
+  });
 
   app.post("/v1/chat/completions", async (req, res) => {
     const body = req.body || {};
@@ -1096,25 +1403,34 @@ async function startServer() {
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders?.();
-      try { await runtimes[provider].enqueue(() => runCompletionStream(body, res)); }
-      catch (e) {
+
+      try {
+        await runtimes[provider].enqueue(() =>
+          withRecovery(provider, () => runCompletionStream(body, res))
+        );
+      } catch (e) {
         console.error(e);
-        sseWrite(res, { error: { message: e.message, provider } });
+        sseWrite(res, { error: { message: e.message, provider, stage: e.stage || null } });
         sseWrite(res, "[DONE]");
       } finally { if (!res.writableEnded) res.end(); }
       return;
     }
 
-    try { res.json(await runtimes[provider].enqueue(() => runCompletion(body))); }
-    catch (e) {
+    try {
+      const result = await runtimes[provider].enqueue(() =>
+        withRecovery(provider, () => runCompletion(body))
+      );
+      res.json(result);
+    } catch (e) {
       console.error(e);
-      res.status(500).json({ error: { message: e.message, provider } });
+      res.status(500).json({ error: { message: e.message, provider, stage: e.stage || null } });
     }
   });
 
-  const server = app.listen(PORT, "127.0.0.1", () => {
-    console.log(`API running: http://127.0.0.1:${PORT}/v1/chat/completions (${browserLabel()})`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`API running: http://${HOST}:${PORT}/v1/chat/completions (${browserLabel()})`);
     console.log(`Providers: ${PROVIDER_NAMES.join(", ")}`);
+    console.log(`API auth: ${API_KEY ? "required" : "disabled"}`);
   });
 
   const shutdown = async () => {
@@ -1134,6 +1450,15 @@ async function main() {
     else for (const p of PROVIDER_NAMES) await login(p);
     return;
   }
+  if (command === "discover") {
+    const targets = provider ? [provider.toLowerCase()] : PROVIDER_NAMES;
+    for (const p of targets) {
+      const result = await discoverProvider(p, true);
+      console.log(JSON.stringify(result, null, 2));
+    }
+    await Promise.all(Object.values(runtimes).map((r) => r.close()));
+    return;
+  }
   await startServer();
 }
 if (require.main === module) {
@@ -1144,5 +1469,6 @@ module.exports = {
   countTokens, normalizeContent, extractImages, buildPrompt, serializeMessages, serializeMessage,
   toolChoiceOf, toolPrompt, parseTool, validTool, makeUsage, responseObject, toolResponse,
   getProvider, deltaFrom, inferProviderFromModel, resolveModel, publicModels, selectModel,
+  discoverModelsOnPage, providerInfo, authMiddleware, shouldRetryError,
   PROVIDERS, PROVIDER_NAMES,
 };
