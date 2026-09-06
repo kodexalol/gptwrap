@@ -22,6 +22,7 @@
 //   - image_url / input_image content parts (http(s) URLs + data URLs)
 //   - live stream:true SSE by polling the web UI as it generates
 //   - OpenAI-style tools via the KODEXA_TOOL text protocol
+//   - model aliases + best-effort UI model selection per request
 //
 // Use only with services/accounts you're authorized to automate.
 // Does not bypass CAPTCHAs, limits, subscriptions, or provider controls.
@@ -61,6 +62,9 @@ const MAX_IMAGES = Number(process.env.MAX_IMAGES || 10);
 const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES || 20 * 1024 * 1024);
 const STREAM_POLL_MS = Number(process.env.STREAM_POLL_MS || 120);
 const STREAM_STABLE_MS = Number(process.env.STREAM_STABLE_MS || 1300);
+const MODEL_STRICT = process.env.MODEL_STRICT === "1";
+const MODEL_SELECT_TIMEOUT = Number(process.env.MODEL_SELECT_TIMEOUT || 6000);
+const MODEL_MAP_RAW = process.env.MODEL_MAP || "";
 
 const USE_REAL_CHROME = process.env.USE_REAL_CHROME !== "0";
 const CHROME_PATH = process.env.CHROME_PATH || "";
@@ -106,6 +110,13 @@ const PROVIDERS = {
       'button[aria-label*="Add files" i]',
       'button[aria-label*="Add photos" i]',
     ],
+    modelOpeners: [
+      'button[data-testid="model-switcher-dropdown-button"]',
+      'button[data-testid*="model-switcher" i]',
+      'button[aria-label*="model selector" i]',
+      'button[aria-label*="model" i][aria-haspopup]',
+      '[role="button"][aria-label*="model" i][aria-haspopup]',
+    ],
     cleanup: (t) => String(t || "").replace(/^ChatGPT said:\s*/i, "").trim(),
   },
   gemini: {
@@ -141,9 +152,134 @@ const PROVIDERS = {
       'button[aria-label*="Add photo" i]',
       'button[data-test-id*="upload" i]',
     ],
+    modelOpeners: [
+      'button[aria-label*="model" i][aria-haspopup]',
+      '[role="button"][aria-label*="model" i][aria-haspopup]',
+      'button[aria-haspopup="menu"]',
+      'button[aria-haspopup="listbox"]',
+    ],
     cleanup: (t) => String(t || "").replace(/^Gemini said\s*/i, "").trim(),
   },
 };
+
+// ---------- model routing ----------
+// uiLabels are tried in order against the visible provider model picker.
+// Generic provider IDs intentionally do not force a model change.
+const DEFAULT_MODEL_MAP = {
+  chatgpt: { provider: "chatgpt", uiLabels: [], selectable: false },
+  "chatgpt-auto": { provider: "chatgpt", uiLabels: [], selectable: false },
+  "gpt-5.6": { provider: "chatgpt", uiLabels: ["GPT-5.6", "GPT 5.6"] },
+  "gpt-5.6-sol": { provider: "chatgpt", uiLabels: ["GPT-5.6 Sol", "GPT 5.6 Sol", "Sol"] },
+  "gpt-5.6-luna": { provider: "chatgpt", uiLabels: ["GPT-5.6 Luna", "GPT 5.6 Luna", "Luna"] },
+  "gpt-5.6-pro": { provider: "chatgpt", uiLabels: ["GPT-5.6 Pro", "GPT 5.6 Pro", "Pro"] },
+  "chatgpt-instant": { provider: "chatgpt", uiLabels: ["Instant"] },
+  "chatgpt-thinking": { provider: "chatgpt", uiLabels: ["Thinking", "Think"] },
+  gemini: { provider: "gemini", uiLabels: [], selectable: false },
+  "gemini-auto": { provider: "gemini", uiLabels: [], selectable: false },
+  "gemini-fast": { provider: "gemini", uiLabels: ["Fast"] },
+  "gemini-pro": { provider: "gemini", uiLabels: ["Pro"] },
+  "gemini-thinking": { provider: "gemini", uiLabels: ["Thinking", "Deep Think"] },
+};
+
+function uniqueStrings(values) {
+  return [...new Set(values.map((v) => String(v || "").trim()).filter(Boolean))];
+}
+
+function inferProviderFromModel(model) {
+  const s = String(model || "").trim().toLowerCase();
+  if (s.startsWith("gemini:") || s.startsWith("gemini/") || s.includes("gemini")) return "gemini";
+  if (s.startsWith("chatgpt:") || s.startsWith("chatgpt/")) return "chatgpt";
+  if (s.startsWith("gpt-") || /^o\d/.test(s) || s.includes("chatgpt")) return "chatgpt";
+  return "chatgpt";
+}
+
+function parseCustomModelMap(raw) {
+  if (!raw) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    console.warn(`[models] MODEL_MAP is invalid JSON: ${e.message}`);
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("[models] MODEL_MAP must be a JSON object");
+    return {};
+  }
+
+  const out = {};
+  for (const [id, value] of Object.entries(parsed)) {
+    if (typeof value === "string") {
+      out[id.toLowerCase()] = {
+        provider: inferProviderFromModel(id),
+        uiLabels: [value],
+        selectable: true,
+      };
+      continue;
+    }
+    if (!value || typeof value !== "object") continue;
+    const provider = PROVIDERS[value.provider] ? value.provider : inferProviderFromModel(id);
+    const labels = uniqueStrings([
+      ...(Array.isArray(value.uiLabels) ? value.uiLabels : []),
+      ...(Array.isArray(value.labels) ? value.labels : []),
+      value.uiLabel,
+      value.label,
+    ]);
+    out[id.toLowerCase()] = {
+      provider,
+      uiLabels: labels,
+      selectable: value.selectable !== false && labels.length > 0,
+    };
+  }
+  return out;
+}
+
+const MODEL_MAP = { ...DEFAULT_MODEL_MAP, ...parseCustomModelMap(MODEL_MAP_RAW) };
+
+function modelLabelGuesses(model) {
+  const raw = String(model || "").trim().replace(/^(chatgpt|gemini)[:/]/i, "");
+  if (!raw) return [];
+  const spaced = raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  const title = spaced.replace(/\b([a-z])/g, (m) => m.toUpperCase());
+  return uniqueStrings([raw, spaced, title]);
+}
+
+function resolveModel(model) {
+  const requested = String(model || "chatgpt").trim() || "chatgpt";
+  const key = requested.toLowerCase();
+  if (MODEL_MAP[key]) {
+    const cfg = MODEL_MAP[key];
+    return {
+      id: requested,
+      key,
+      provider: cfg.provider,
+      uiLabels: uniqueStrings(cfg.uiLabels || []),
+      selectable: cfg.selectable !== false && (cfg.uiLabels || []).length > 0,
+      known: true,
+    };
+  }
+
+  const provider = inferProviderFromModel(requested);
+  const uiLabels = modelLabelGuesses(requested);
+  return {
+    id: requested,
+    key,
+    provider,
+    uiLabels,
+    selectable: uiLabels.length > 0,
+    known: false,
+  };
+}
+
+function publicModels() {
+  return Object.entries(MODEL_MAP).map(([id, cfg]) => ({
+    id,
+    object: "model",
+    owned_by: cfg.provider,
+    provider: cfg.provider,
+    selectable: cfg.selectable !== false && (cfg.uiLabels || []).length > 0,
+  }));
+}
 
 // ---------- helpers ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -160,8 +296,7 @@ function browserLabel() {
 
 function getProvider(body) {
   if (body.provider && PROVIDERS[body.provider]) return body.provider;
-  if (String(body.model || "").toLowerCase().includes("gemini")) return "gemini";
-  return "chatgpt";
+  return resolveModel(body.model).provider;
 }
 
 function contentPartText(part) {
@@ -380,6 +515,99 @@ async function attachImages(page, provider, files = []) {
     }
   }
   await sleep(700);
+}
+
+// ---------- model picker ----------
+function regexEscape(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function visibleLocator(locator) {
+  try {
+    return (await locator.isVisible().catch(() => false)) ? locator : null;
+  } catch {
+    return null;
+  }
+}
+
+async function findModelOption(page, labels, timeout = MODEL_SELECT_TIMEOUT) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    for (const label of labels) {
+      const re = new RegExp(regexEscape(label), "i");
+      const candidates = [
+        page.getByRole("menuitem", { name: re }).first(),
+        page.getByRole("option", { name: re }).first(),
+        page.getByRole("radio", { name: re }).first(),
+        page.getByRole("button", { name: re }).first(),
+        page.locator('[role="menu"] *').filter({ hasText: re }).first(),
+        page.locator('[role="listbox"] *').filter({ hasText: re }).first(),
+      ];
+      for (const candidate of candidates) {
+        const visible = await visibleLocator(candidate);
+        if (visible) return visible;
+      }
+    }
+    await sleep(120);
+  }
+  return null;
+}
+
+async function openModelPicker(page, provider) {
+  const cfg = PROVIDERS[provider];
+  for (const sel of cfg.modelOpeners || []) {
+    try {
+      const candidates = page.locator(sel);
+      const count = Math.min(await candidates.count(), 8);
+      for (let i = 0; i < count; i++) {
+        const btn = candidates.nth(i);
+        if (!(await btn.isVisible().catch(() => false))) continue;
+        await btn.click();
+        await sleep(200);
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
+async function selectModel(page, runtime, requestedModel) {
+  const model = resolveModel(requestedModel);
+  if (model.provider !== runtime.provider) {
+    throw new Error(`Model ${JSON.stringify(requestedModel)} belongs to ${model.provider}, not ${runtime.provider}`);
+  }
+  if (!model.selectable) return { selected: false, skipped: true, model };
+  if (runtime.currentModelKey === model.key) return { selected: true, cached: true, model };
+
+  const opened = await openModelPicker(page, runtime.provider);
+  if (!opened) {
+    const message = `${runtime.provider}: could not find model picker for ${requestedModel}`;
+    if (MODEL_STRICT) throw new Error(message);
+    console.warn(`[models] ${message}; keeping current UI model`);
+    return { selected: false, model, warning: message };
+  }
+
+  const option = await findModelOption(page, model.uiLabels);
+  if (!option) {
+    await page.keyboard.press("Escape").catch(() => {});
+    const message = `${runtime.provider}: model option not found for ${requestedModel} (tried: ${model.uiLabels.join(", ")})`;
+    if (MODEL_STRICT) throw new Error(message);
+    console.warn(`[models] ${message}; keeping current UI model`);
+    return { selected: false, model, warning: message };
+  }
+
+  try {
+    await option.click({ timeout: 5000 });
+    await sleep(350);
+    runtime.currentModelKey = model.key;
+    console.log(`[${runtime.provider}] selected model: ${requestedModel}`);
+    return { selected: true, model };
+  } catch (e) {
+    const message = `${runtime.provider}: failed to click model ${requestedModel}: ${e.message}`;
+    if (MODEL_STRICT) throw new Error(message);
+    console.warn(`[models] ${message}; keeping current UI model`);
+    return { selected: false, model, warning: message };
+  }
 }
 
 // ---------- tool calling (KODEXA_TOOL protocol) ----------
@@ -634,6 +862,7 @@ class Runtime {
     this.page = null;
     this.queue = Promise.resolve();
     this.using = "";
+    this.currentModelKey = "";
   }
 
   async start(headless = HEADLESS) {
@@ -654,10 +883,12 @@ class Runtime {
       } catch {}
       try {
         await this.page.goto(wantUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+        this.currentModelKey = "";
         return this.page;
       } catch {}
     }
     this.page = await this.context.newPage();
+    this.currentModelKey = "";
     await this.page.goto(wantUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     return this.page;
   }
@@ -673,6 +904,7 @@ class Runtime {
       await this.page?.close().catch(() => {});
     } finally {
       this.page = null;
+      this.currentModelKey = "";
     }
     if (this.context) {
       await this.context.close().catch(() => {});
@@ -728,10 +960,14 @@ const toolResponse = (model, call, usage) => ({
 
 // ---------- completion loops ----------
 async function completionContext(body) {
-  const provider = getProvider(body);
+  const requestedModel = body.model || (body.provider === "gemini" ? "gemini" : "chatgpt");
+  const resolvedModel = resolveModel(requestedModel);
+  const provider = body.provider && PROVIDERS[body.provider] ? body.provider : resolvedModel.provider;
   const runtime = runtimes[provider];
   const page = await runtime.pageFor();
-  const model = body.model || provider;
+  await selectModel(page, runtime, requestedModel);
+
+  const model = requestedModel;
   const messages = body.messages || [];
   const tools = body.tools || [];
   const toolChoice = toolChoiceOf(body);
@@ -740,7 +976,7 @@ async function completionContext(body) {
   const toolBlock = toolPrompt(tools, toolChoice);
   const convo = buildPrompt(messages);
   const prompt = [toolBlock, convo].filter(Boolean).join("\n\n");
-  return { provider, runtime, page, model, messages, tools, toolChoice, imageFiles, prompt };
+  return { provider, runtime, page, model, resolvedModel, messages, tools, toolChoice, imageFiles, prompt };
 }
 
 async function runCompletion(body) {
@@ -929,14 +1165,14 @@ async function startServer() {
       tokenizer: _enc ? "cl100k_base" : "fallback",
       streaming: true,
       images: true,
+      modelSelection: true,
+      strictModelSelection: MODEL_STRICT,
+      models: publicModels().map((m) => m.id),
     })
   );
 
   app.get("/v1/models", (req, res) =>
-    res.json({
-      object: "list",
-      data: ["chatgpt", "gemini"].map((id) => ({ id, object: "model", owned_by: id })),
-    })
+    res.json({ object: "list", data: publicModels() })
   );
 
   app.post("/v1/chat/completions", async (req, res) => {
@@ -1022,4 +1258,8 @@ module.exports = {
   toolResponse,
   getProvider,
   deltaFrom,
+  inferProviderFromModel,
+  resolveModel,
+  publicModels,
+  selectModel,
 };
