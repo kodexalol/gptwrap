@@ -41,7 +41,7 @@ EOF
 
 cat >"$TMP_APP" <<EOF
 [Unit]
-Description=gptwrap API
+Description=gptwrap multi-account API
 After=network-online.target gptwrap-display.service
 Wants=network-online.target
 Requires=gptwrap-display.service
@@ -52,7 +52,7 @@ User=$RUN_USER
 WorkingDirectory=$ROOT
 Environment=DISPLAY=:99
 EnvironmentFile=-$ROOT/.env
-ExecStart=$NODE_BIN $ROOT/index.js
+ExecStart=$NODE_BIN $ROOT/multi.js
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
@@ -82,4 +82,5 @@ Useful commands:
 
 The services run as: $RUN_USER
 Repo directory: $ROOT
+Gateway: $ROOT/multi.js
 EOF
