@@ -2,14 +2,15 @@
   "name": "gptwrap",
   "version": "1.0.0",
   "description": "Browser-driven OpenAI-style gateway for ChatGPT, Gemini, Claude, Grok and DeepSeek web apps",
-  "main": "index.js",
+  "main": "multi.js",
   "scripts": {
-    "start": "node index.js",
-    "login": "node index.js login",
-    "accounts": "node index.js accounts",
-    "discover": "node index.js discover",
-    "check": "node --check index.js",
-    "test": "node --check index.js",
+    "start": "node multi.js",
+    "start:single": "node index.js",
+    "login": "node multi.js login",
+    "accounts": "node multi.js accounts",
+    "discover": "node multi.js discover",
+    "check": "node --check index.js && node --check multi.js",
+    "test": "node --check index.js && node --check multi.js",
     "vps:display": "bash scripts/vps-display.sh"
   },
   "keywords": [
