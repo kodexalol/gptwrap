@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "login": "node index.js login",
+    "accounts": "node index.js accounts",
     "discover": "node index.js discover",
     "check": "node --check index.js",
     "test": "node --check index.js",
