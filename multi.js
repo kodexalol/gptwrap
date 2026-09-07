@@ -1,7 +1,7 @@
 // gptwrap multi-account gateway
 // Runs the existing single-profile index.js engine as isolated localhost children.
-// Each named account receives its own profile root and child process.
-// Account selection is explicit/default-based; this does not rotate accounts to evade quotas or rate limits.
+// Named accounts receive separate profile roots and child processes.
+// Auto routing is health/load based. It never rotates accounts to evade quotas or rate limits.
 
 const express = require("express");
 const { spawn } = require("child_process");
@@ -34,12 +34,19 @@ const PORT = Number(process.env.PORT || 3000);
 const PROFILE_ROOT = path.resolve(process.env.PROFILE_ROOT || "./profiles");
 const API_KEY = process.env.API_KEY || "";
 const ALLOW_UNAUTHENTICATED = process.env.ALLOW_UNAUTHENTICATED === "1";
+
 const ACCOUNTS_RAW = process.env.ACCOUNTS || "";
 const DEFAULT_ACCOUNTS_RAW = process.env.DEFAULT_ACCOUNTS || "";
 const ALLOW_DYNAMIC_ACCOUNTS = process.env.ALLOW_DYNAMIC_ACCOUNTS === "1";
+
+const AUTO_ROUTE_ACCOUNTS = process.env.AUTO_ROUTE_ACCOUNTS !== "0";
+const ROUTER_STRATEGY = String(process.env.ROUTER_STRATEGY || "least-load").toLowerCase();
+const ROUTER_FAILURE_COOLDOWN_MS = Math.max(0, Number(process.env.ROUTER_FAILURE_COOLDOWN_MS || 60000));
+
 const CHILD_PORT_BASE = Number(process.env.CHILD_PORT_BASE || 3100);
 const CHILD_START_TIMEOUT = Number(process.env.CHILD_START_TIMEOUT || 30000);
 const CHILD_IDLE_MS = Number(process.env.CHILD_IDLE_MS || 0);
+
 const PROVIDERS = core.PROVIDER_NAMES || Object.keys(core.PROVIDERS || {});
 const INTERNAL_KEY = crypto.randomBytes(32).toString("hex");
 
@@ -54,12 +61,18 @@ function parseObject(raw, name) {
     return {};
   }
 }
-function validAccount(id) { return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(id || "")); }
+
+function validAccount(id) {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(id || ""));
+}
 function assertAccount(id) {
   const value = String(id || "default");
-  if (!validAccount(value)) throw new Error(`Invalid account id ${JSON.stringify(value)}. Use 1-64 letters, numbers, dot, underscore or hyphen.`);
+  if (!validAccount(value)) {
+    throw new Error(`Invalid account id ${JSON.stringify(value)}. Use 1-64 letters, numbers, dot, underscore or hyphen.`);
+  }
   return value;
 }
+
 const ACCOUNT_CONFIG = (() => {
   const parsed = parseObject(ACCOUNTS_RAW, "ACCOUNTS");
   const out = Object.fromEntries(PROVIDERS.map((p) => [p, ["default"]]));
@@ -76,8 +89,12 @@ const ACCOUNT_CONFIG = (() => {
   }
   return out;
 })();
+
 const DEFAULTS = parseObject(DEFAULT_ACCOUNTS_RAW, "DEFAULT_ACCOUNTS");
-function configuredAccounts(provider) { return ACCOUNT_CONFIG[provider] || ["default"]; }
+
+function configuredAccounts(provider) {
+  return ACCOUNT_CONFIG[provider] || ["default"];
+}
 function defaultAccount(provider) {
   const wanted = String(DEFAULTS[provider] || "default");
   return configuredAccounts(provider).includes(wanted) ? wanted : "default";
@@ -91,12 +108,15 @@ function accountRoot(account) {
   account = assertAccount(account);
   return account === "default" ? PROFILE_ROOT : path.join(PROFILE_ROOT, "accounts", account);
 }
-function accountProfile(provider, account) { return path.join(accountRoot(account), provider); }
+function accountProfile(provider, account) {
+  return path.join(accountRoot(account), provider);
+}
 function allConfiguredAccounts() {
   return [...new Set(PROVIDERS.flatMap((p) => configuredAccounts(p)))];
 }
-function providersForAccount(account) { return PROVIDERS.filter((p) => configuredAccounts(p).includes(account)); }
-function isLoopback(host) { return ["127.0.0.1", "localhost", "::1"].includes(String(host).toLowerCase()); }
+function isLoopback(host) {
+  return ["127.0.0.1", "localhost", "::1"].includes(String(host).toLowerCase());
+}
 function safeEqual(a, b) {
   const aa = Buffer.from(String(a || ""));
   const bb = Buffer.from(String(b || ""));
@@ -118,11 +138,15 @@ function validateExposure() {
   if (process.env.CHROME_USER_DATA_DIR && allConfiguredAccounts().some((a) => a !== "default")) {
     throw new Error("Multi-account mode cannot share CHROME_USER_DATA_DIR. Unset CHROME_USER_DATA_DIR and use gptwrap-managed profiles.");
   }
+  if (!["least-load", "round-robin"].includes(ROUTER_STRATEGY)) {
+    throw new Error(`Unknown ROUTER_STRATEGY=${JSON.stringify(ROUTER_STRATEGY)}. Use least-load or round-robin.`);
+  }
 }
 
 // ---------- child process manager ----------
 const children = new Map();
 let nextPort = CHILD_PORT_BASE;
+
 function childEnv(account, port) {
   return {
     ...process.env,
@@ -135,6 +159,7 @@ function childEnv(account, port) {
     ACCOUNTS: "",
     DEFAULT_ACCOUNTS: "",
     ALLOW_DYNAMIC_ACCOUNTS: "0",
+    AUTO_ROUTE_ACCOUNTS: "0",
   };
 }
 function prefixLines(stream, prefix, sink) {
@@ -145,7 +170,9 @@ function prefixLines(stream, prefix, sink) {
     buf = lines.pop() || "";
     for (const line of lines) if (line) sink(`${prefix}${line}\n`);
   });
-  stream?.on("end", () => { if (buf) sink(`${prefix}${buf}\n`); });
+  stream?.on("end", () => {
+    if (buf) sink(`${prefix}${buf}\n`);
+  });
 }
 async function waitForChild(child) {
   const start = Date.now();
@@ -169,7 +196,11 @@ function touch(child) {
 async function startChild(account) {
   account = assertAccount(account);
   const existing = children.get(account);
-  if (existing && existing.proc.exitCode == null) { touch(existing); return existing; }
+  if (existing && existing.proc.exitCode == null) {
+    touch(existing);
+    return existing;
+  }
+
   const port = nextPort++;
   fs.mkdirSync(accountRoot(account), { recursive: true });
   const proc = spawn(process.execPath, [path.resolve(__dirname, "index.js")], {
@@ -177,7 +208,14 @@ async function startChild(account) {
     env: childEnv(account, port),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const child = { account, port, proc, startedAt: Date.now(), lastUsed: Date.now(), idleTimer: null };
+  const child = {
+    account,
+    port,
+    proc,
+    startedAt: Date.now(),
+    lastUsed: Date.now(),
+    idleTimer: null,
+  };
   children.set(account, child);
   prefixLines(proc.stdout, `[child:${account}] `, (s) => process.stdout.write(s));
   prefixLines(proc.stderr, `[child:${account}] `, (s) => process.stderr.write(s));
@@ -185,8 +223,13 @@ async function startChild(account) {
     clearTimeout(child.idleTimer);
     if (children.get(account) === child) children.delete(account);
   });
-  try { await waitForChild(child); }
-  catch (e) { proc.kill("SIGTERM"); throw e; }
+
+  try {
+    await waitForChild(child);
+  } catch (e) {
+    proc.kill("SIGTERM");
+    throw e;
+  }
   touch(child);
   return child;
 }
@@ -196,6 +239,7 @@ async function stopChild(account) {
   children.delete(account);
   clearTimeout(child.idleTimer);
   if (child.proc.exitCode != null) return;
+
   child.proc.kill("SIGTERM");
   await Promise.race([
     new Promise((resolve) => child.proc.once("exit", resolve)),
@@ -205,27 +249,192 @@ async function stopChild(account) {
 }
 function childStatus(account) {
   const child = children.get(account);
-  return child ? {
-    running: child.proc.exitCode == null,
-    port: child.port,
-    pid: child.proc.pid,
-    started_at: new Date(child.startedAt).toISOString(),
-    last_used_at: new Date(child.lastUsed).toISOString(),
-  } : { running: false, port: null, pid: null, started_at: null, last_used_at: null };
+  return child
+    ? {
+        running: child.proc.exitCode == null,
+        port: child.port,
+        pid: child.proc.pid,
+        started_at: new Date(child.startedAt).toISOString(),
+        last_used_at: new Date(child.lastUsed).toISOString(),
+      }
+    : {
+        running: false,
+        port: null,
+        pid: null,
+        started_at: null,
+        last_used_at: null,
+      };
 }
 
-// ---------- proxy helpers ----------
+// ---------- auto router ----------
+const routeStats = new Map();
+const roundRobinCursor = new Map();
+
+function routeKey(provider, account) {
+  return `${provider}:${account}`;
+}
+function statsFor(provider, account) {
+  const key = routeKey(provider, account);
+  let s = routeStats.get(key);
+  if (!s) {
+    s = {
+      active: 0,
+      selections: 0,
+      successes: 0,
+      failures: 0,
+      consecutiveFailures: 0,
+      cooldownUntil: 0,
+      lastSelectedAt: 0,
+      lastSuccessAt: 0,
+      lastFailureAt: 0,
+      lastError: "",
+    };
+    routeStats.set(key, s);
+  }
+  return s;
+}
+function accountHealthy(provider, account, now = Date.now()) {
+  return statsFor(provider, account).cooldownUntil <= now;
+}
+function rendezvousScore(provider, stickyKey, account) {
+  const h = crypto.createHash("sha256").update(`${provider}\0${stickyKey}\0${account}`).digest();
+  return h.readBigUInt64BE(0);
+}
+function chooseAutoAccount(provider, stickyKey = "", exclude = new Set()) {
+  const configured = configuredAccounts(provider).filter((a) => !exclude.has(a));
+  if (!configured.length) throw new Error(`No configured accounts available for ${provider}`);
+
+  const now = Date.now();
+  const healthy = configured.filter((a) => accountHealthy(provider, a, now));
+  const candidates = healthy.length ? healthy : configured;
+
+  if (stickyKey) {
+    return candidates
+      .map((account) => ({ account, score: rendezvousScore(provider, stickyKey, account) }))
+      .sort((a, b) => (a.score === b.score ? a.account.localeCompare(b.account) : a.score > b.score ? -1 : 1))[0].account;
+  }
+
+  if (ROUTER_STRATEGY === "round-robin") {
+    const cursor = roundRobinCursor.get(provider) || 0;
+    const account = candidates[cursor % candidates.length];
+    roundRobinCursor.set(provider, (cursor + 1) % Math.max(1, candidates.length));
+    return account;
+  }
+
+  return candidates
+    .map((account) => ({
+      account,
+      stats: statsFor(provider, account),
+      running: Boolean(children.get(account) && children.get(account).proc.exitCode == null),
+    }))
+    .sort((a, b) => {
+      if (a.stats.active !== b.stats.active) return a.stats.active - b.stats.active;
+      if (a.stats.lastSelectedAt !== b.stats.lastSelectedAt) return a.stats.lastSelectedAt - b.stats.lastSelectedAt;
+      if (a.running !== b.running) return a.running ? -1 : 1;
+      if (a.account === defaultAccount(provider)) return -1;
+      if (b.account === defaultAccount(provider)) return 1;
+      return a.account.localeCompare(b.account);
+    })[0].account;
+}
+function requestedRoutingKey(body, headerKey = "") {
+  return String(body.route_key || body.routing_key || headerKey || "").trim();
+}
 function inferProvider(body) {
   const explicit = String(body.provider || "").toLowerCase();
   if (PROVIDERS.includes(explicit)) return explicit;
   return core.getProvider(body);
 }
-function routeFor(body, headerAccount = "") {
+function routeFor(body, headerAccount = "", headerRouteKey = "") {
   const provider = inferProvider(body);
   if (!PROVIDERS.includes(provider)) throw new Error(`Unknown provider: ${provider}`);
-  const account = resolveAccount(provider, body.account || headerAccount);
-  return { provider, account };
+
+  const raw = String(body.account || headerAccount || "").trim();
+  const wantsAuto = raw.toLowerCase() === "auto" || (!raw && AUTO_ROUTE_ACCOUNTS && configuredAccounts(provider).length > 1);
+
+  if (!wantsAuto) {
+    const account = resolveAccount(provider, raw);
+    return { provider, account, routing: raw ? "explicit" : "default", route_key: null };
+  }
+
+  const stickyKey = requestedRoutingKey(body, headerRouteKey);
+  const account = chooseAutoAccount(provider, stickyKey);
+  return {
+    provider,
+    account,
+    routing: stickyKey ? "sticky-auto" : "auto",
+    route_key: stickyKey || null,
+  };
 }
+function beginRoute(route) {
+  const s = statsFor(route.provider, route.account);
+  s.active++;
+  s.selections++;
+  s.lastSelectedAt = Date.now();
+}
+function finishRoute(route, { ok = true, error = "" } = {}) {
+  const s = statsFor(route.provider, route.account);
+  s.active = Math.max(0, s.active - 1);
+  if (ok) {
+    s.successes++;
+    s.consecutiveFailures = 0;
+    s.lastSuccessAt = Date.now();
+    s.lastError = "";
+    return;
+  }
+
+  s.failures++;
+  s.consecutiveFailures++;
+  s.lastFailureAt = Date.now();
+  s.lastError = String(error || "upstream failure");
+  if (ROUTER_FAILURE_COOLDOWN_MS) s.cooldownUntil = Date.now() + ROUTER_FAILURE_COOLDOWN_MS;
+}
+async function ensureRouteReady(route) {
+  if (route.routing !== "auto" && route.routing !== "sticky-auto") {
+    await startChild(route.account);
+    return route;
+  }
+
+  const tried = new Set();
+  let current = route;
+  while (tried.size < configuredAccounts(route.provider).length) {
+    tried.add(current.account);
+    try {
+      await startChild(current.account);
+      return current;
+    } catch (e) {
+      const s = statsFor(current.provider, current.account);
+      s.failures++;
+      s.consecutiveFailures++;
+      s.lastFailureAt = Date.now();
+      s.lastError = String(e?.message || e);
+      if (ROUTER_FAILURE_COOLDOWN_MS) s.cooldownUntil = Date.now() + ROUTER_FAILURE_COOLDOWN_MS;
+      if (tried.size >= configuredAccounts(route.provider).length) throw e;
+      current = {
+        ...current,
+        account: chooseAutoAccount(route.provider, route.route_key || "", tried),
+      };
+    }
+  }
+  return current;
+}
+function routingRecord(provider, account) {
+  const s = statsFor(provider, account);
+  return {
+    active: s.active,
+    selections: s.selections,
+    successes: s.successes,
+    failures: s.failures,
+    consecutive_failures: s.consecutiveFailures,
+    healthy: accountHealthy(provider, account),
+    cooldown_until: s.cooldownUntil ? new Date(s.cooldownUntil).toISOString() : null,
+    last_selected_at: s.lastSelectedAt ? new Date(s.lastSelectedAt).toISOString() : null,
+    last_success_at: s.lastSuccessAt ? new Date(s.lastSuccessAt).toISOString() : null,
+    last_failure_at: s.lastFailureAt ? new Date(s.lastFailureAt).toISOString() : null,
+    last_error: s.lastError || null,
+  };
+}
+
+// ---------- proxy helpers ----------
 function childHeaders(extra = {}) {
   return { Authorization: `Bearer ${INTERNAL_KEY}`, ...extra };
 }
@@ -237,26 +446,36 @@ async function childFetch(account, urlPath, init = {}) {
     headers: childHeaders(init.headers || {}),
   });
 }
-async function relayJson(res, upstream, account) {
+function setRoutingHeaders(res, route) {
+  res.setHeader("X-GPTWrap-Account", route.account);
+  res.setHeader("X-GPTWrap-Routing", route.routing);
+}
+async function relayJson(res, upstream, route) {
   const text = await upstream.text();
   res.status(upstream.status);
-  res.setHeader("X-GPTWrap-Account", account);
+  setRoutingHeaders(res, route);
   const ct = upstream.headers.get("content-type");
   if (ct) res.setHeader("Content-Type", ct);
   try {
     const data = JSON.parse(text);
-    if (data && typeof data === "object" && !Array.isArray(data)) data.account = data.account || account;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      data.account = data.account || route.account;
+      data.routing = data.routing || route.routing;
+    }
     res.send(JSON.stringify(data));
-  } catch { res.send(text); }
+  } catch {
+    res.send(text);
+  }
 }
-async function relayStream(res, upstream, account) {
+async function relayStream(res, upstream, route) {
   res.status(upstream.status);
   res.setHeader("Content-Type", upstream.headers.get("content-type") || "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
-  res.setHeader("X-GPTWrap-Account", account);
+  setRoutingHeaders(res, route);
   res.flushHeaders?.();
+
   if (!upstream.body) return res.end();
   const reader = upstream.body.getReader();
   try {
@@ -265,7 +484,10 @@ async function relayStream(res, upstream, account) {
       if (done) break;
       if (!res.write(Buffer.from(value))) await new Promise((resolve) => res.once("drain", resolve));
     }
-  } finally { reader.releaseLock(); res.end(); }
+  } finally {
+    reader.releaseLock();
+    res.end();
+  }
 }
 
 // ---------- aggregated metadata ----------
@@ -276,6 +498,7 @@ function accountRecord(provider, account) {
     default: account === defaultAccount(provider),
     profile_dir: accountProfile(provider, account),
     child: childStatus(account),
+    routing: routingRecord(provider, account),
   };
 }
 async function providerRecord(provider) {
@@ -283,8 +506,14 @@ async function providerRecord(provider) {
   return {
     id: provider,
     title: core.PROVIDERS?.[provider]?.title || provider,
-    capabilities: { ...(core.PROVIDERS?.[provider]?.capabilities || {}), multi_account: true },
+    capabilities: {
+      ...(core.PROVIDERS?.[provider]?.capabilities || {}),
+      multi_account: true,
+      auto_routing: true,
+    },
     default_account: defaultAccount(provider),
+    auto_routing: AUTO_ROUTE_ACCOUNTS,
+    router_strategy: ROUTER_STRATEGY,
     accounts,
   };
 }
@@ -298,7 +527,11 @@ async function modelsFor(provider, account, refresh) {
   for (const model of data.data || []) {
     model.account = account;
     model.accounts = [account];
-    model.capabilities = { ...(model.capabilities || {}), multi_account: true };
+    model.capabilities = {
+      ...(model.capabilities || {}),
+      multi_account: true,
+      auto_routing: true,
+    };
   }
   return data;
 }
@@ -312,23 +545,30 @@ function cliEnv(account) {
     ACCOUNTS: "",
     DEFAULT_ACCOUNTS: "",
     ALLOW_DYNAMIC_ACCOUNTS: "0",
+    AUTO_ROUTE_ACCOUNTS: "0",
   };
 }
 function runCoreCli(args, account) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(accountRoot(account), { recursive: true });
     const proc = spawn(process.execPath, [path.resolve(__dirname, "index.js"), ...args], {
-      cwd: process.cwd(), env: cliEnv(account), stdio: "inherit",
+      cwd: process.cwd(),
+      env: cliEnv(account),
+      stdio: "inherit",
     });
     proc.once("error", reject);
-    proc.once("exit", (code, signal) => code === 0 ? resolve() : reject(new Error(`Child CLI exited ${code ?? signal}`)));
+    proc.once("exit", (code, signal) =>
+      code === 0 ? resolve() : reject(new Error(`Child CLI exited ${code ?? signal}`))
+    );
   });
 }
 async function loginCli(provider, accountArg) {
   provider = String(provider || "").toLowerCase();
   if (!PROVIDERS.includes(provider)) throw new Error(`Use one of: ${PROVIDERS.join(", ")}`);
   const account = resolveAccount(provider, accountArg);
-  if (process.env.CHROME_USER_DATA_DIR && account !== "default") throw new Error("Named accounts require managed profiles; unset CHROME_USER_DATA_DIR.");
+  if (process.env.CHROME_USER_DATA_DIR && account !== "default") {
+    throw new Error("Named accounts require managed profiles; unset CHROME_USER_DATA_DIR.");
+  }
   console.log(`[multi] login ${provider}/${account} -> ${accountProfile(provider, account)}`);
   await runCoreCli(["login", provider], account);
 }
@@ -345,7 +585,11 @@ function accountsCli(providerArg) {
     if (!PROVIDERS.includes(provider)) throw new Error(`Unknown provider: ${provider}`);
     console.log(`${provider}:`);
     for (const account of configuredAccounts(provider)) {
-      console.log(`  ${account}${account === defaultAccount(provider) ? " (default)" : ""} -> ${accountProfile(provider, account)}`);
+      const r = routingRecord(provider, account);
+      console.log(
+        `  ${account}${account === defaultAccount(provider) ? " (default)" : ""} ` +
+        `[active=${r.active} healthy=${r.healthy}] -> ${accountProfile(provider, account)}`
+      );
     }
   }
 }
@@ -354,26 +598,62 @@ function accountsCli(providerArg) {
 async function startGateway() {
   validateExposure();
   fs.mkdirSync(PROFILE_ROOT, { recursive: true });
+
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.BODY_LIMIT || "50mb" }));
 
-  app.get("/health", (req, res) => res.json({
-    ok: true,
-    mode: "multi-account",
-    providers: PROVIDERS,
-    accounts: Object.fromEntries(PROVIDERS.map((p) => [p, configuredAccounts(p)])),
-    children_running: [...children.keys()],
-    auth_required: Boolean(API_KEY),
-  }));
+  app.get("/health", (req, res) =>
+    res.json({
+      ok: true,
+      mode: "multi-account",
+      providers: PROVIDERS,
+      accounts: Object.fromEntries(PROVIDERS.map((p) => [p, configuredAccounts(p)])),
+      children_running: [...children.keys()],
+      auth_required: Boolean(API_KEY),
+      auto_routing: AUTO_ROUTE_ACCOUNTS,
+      router_strategy: ROUTER_STRATEGY,
+    })
+  );
 
   app.use("/v1", auth);
 
   app.get("/v1/accounts", (req, res) => {
     const provider = String(req.query.provider || "").toLowerCase();
-    if (provider && !PROVIDERS.includes(provider)) return res.status(400).json({ error: { message: `Unknown provider: ${provider}` } });
+    if (provider && !PROVIDERS.includes(provider)) {
+      return res.status(400).json({ error: { message: `Unknown provider: ${provider}` } });
+    }
     const targets = provider ? [provider] : PROVIDERS;
-    res.json({ object: "list", data: targets.flatMap((p) => configuredAccounts(p).map((a) => accountRecord(p, a))) });
+    res.json({
+      object: "list",
+      data: targets.flatMap((p) => configuredAccounts(p).map((a) => accountRecord(p, a))),
+    });
+  });
+
+  app.get("/v1/router", (req, res) => {
+    const provider = String(req.query.provider || "").toLowerCase();
+    if (provider && !PROVIDERS.includes(provider)) {
+      return res.status(400).json({ error: { message: `Unknown provider: ${provider}` } });
+    }
+    const targets = provider ? [provider] : PROVIDERS;
+    res.json({
+      object: "router",
+      auto_routing: AUTO_ROUTE_ACCOUNTS,
+      strategy: ROUTER_STRATEGY,
+      failure_cooldown_ms: ROUTER_FAILURE_COOLDOWN_MS,
+      providers: Object.fromEntries(
+        targets.map((p) => [
+          p,
+          {
+            default_account: defaultAccount(p),
+            accounts: configuredAccounts(p).map((a) => ({
+              account: a,
+              ...routingRecord(p, a),
+            })),
+          },
+        ])
+      ),
+    });
   });
 
   app.get("/v1/providers", async (req, res) => {
@@ -382,21 +662,34 @@ async function startGateway() {
 
   app.get("/v1/models", async (req, res) => {
     const provider = String(req.query.provider || "").toLowerCase();
-    if (provider && !PROVIDERS.includes(provider)) return res.status(400).json({ error: { message: `Unknown provider: ${provider}` } });
+    if (provider && !PROVIDERS.includes(provider)) {
+      return res.status(400).json({ error: { message: `Unknown provider: ${provider}` } });
+    }
     const requestedAccount = String(req.query.account || "");
-    if (requestedAccount && !provider) return res.status(400).json({ error: { message: "account filter requires provider" } });
+    if (requestedAccount && !provider) {
+      return res.status(400).json({ error: { message: "account filter requires provider" } });
+    }
     const refresh = ["1", "true", "yes"].includes(String(req.query.refresh || "").toLowerCase());
+
     try {
       if (provider) {
-        const account = resolveAccount(provider, requestedAccount);
+        const account =
+          requestedAccount.toLowerCase() === "auto"
+            ? chooseAutoAccount(provider)
+            : resolveAccount(provider, requestedAccount);
         const data = await modelsFor(provider, account, refresh);
         return res.json(data);
       }
+
       const chunks = [];
       for (const p of PROVIDERS) {
-        try { chunks.push(await modelsFor(p, defaultAccount(p), refresh)); }
-        catch (e) { chunks.push({ data: [], discovery: [{ provider: p, error: e.message }] }); }
+        try {
+          chunks.push(await modelsFor(p, defaultAccount(p), refresh));
+        } catch (e) {
+          chunks.push({ data: [], discovery: [{ provider: p, error: e.message }] });
+        }
       }
+
       const seen = new Set();
       const models = [];
       for (const chunk of chunks) {
@@ -407,41 +700,106 @@ async function startGateway() {
           models.push(model);
         }
       }
-      res.json({ object: "list", data: models, discovery: chunks.flatMap((x) => x.discovery || []) });
-    } catch (e) { res.status(500).json({ error: { message: e.message } }); }
+      res.json({
+        object: "list",
+        data: models,
+        discovery: chunks.flatMap((x) => x.discovery || []),
+      });
+    } catch (e) {
+      res.status(500).json({ error: { message: e.message } });
+    }
   });
 
   app.post("/v1/providers/:provider/discover", async (req, res) => {
     const provider = String(req.params.provider || "").toLowerCase();
-    if (!PROVIDERS.includes(provider)) return res.status(404).json({ error: { message: `Unknown provider: ${provider}` } });
+    if (!PROVIDERS.includes(provider)) {
+      return res.status(404).json({ error: { message: `Unknown provider: ${provider}` } });
+    }
+
     try {
-      const account = resolveAccount(provider, req.body?.account || req.headers["x-gptwrap-account"]);
+      const rawAccount = String(req.body?.account || req.headers["x-gptwrap-account"] || "");
+      const account =
+        rawAccount.toLowerCase() === "auto"
+          ? chooseAutoAccount(provider, requestedRoutingKey(req.body || {}, req.headers["x-gptwrap-route-key"]))
+          : resolveAccount(provider, rawAccount);
+      const route = {
+        provider,
+        account,
+        routing: rawAccount.toLowerCase() === "auto" ? "auto" : rawAccount ? "explicit" : "default",
+        route_key: null,
+      };
       const upstream = await childFetch(account, `/v1/providers/${provider}/discover`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      await relayJson(res, upstream, account);
-    } catch (e) { res.status(500).json({ error: { message: e.message, provider } }); }
+      await relayJson(res, upstream, route);
+    } catch (e) {
+      res.status(500).json({ error: { message: e.message, provider } });
+    }
   });
 
   app.post("/v1/chat/completions", async (req, res) => {
     const body = { ...(req.body || {}) };
     let route;
-    try { route = routeFor(body, req.headers["x-gptwrap-account"]); }
-    catch (e) { return res.status(400).json({ error: { message: e.message } }); }
+
+    try {
+      route = routeFor(
+        body,
+        req.headers["x-gptwrap-account"],
+        req.headers["x-gptwrap-route-key"]
+      );
+      route = await ensureRouteReady(route);
+    } catch (e) {
+      return res.status(400).json({ error: { message: e.message } });
+    }
+
     delete body.account;
+    delete body.route_key;
+    delete body.routing_key;
     body.provider = route.provider;
+
+    beginRoute(route);
+    let routeFinished = false;
+    const finish = (ok, error = "") => {
+      if (routeFinished) return;
+      routeFinished = true;
+      finishRoute(route, { ok, error });
+    };
+
     try {
       const upstream = await childFetch(route.account, "/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (body.stream) return relayStream(res, upstream, route.account);
-      return relayJson(res, upstream, route.account);
+
+      // 429/usage limits are intentionally NOT treated as unhealthy for account selection.
+      const healthyResult = upstream.status < 500;
+      if (body.stream) {
+        await relayStream(res, upstream, route);
+        finish(healthyResult, healthyResult ? "" : `upstream HTTP ${upstream.status}`);
+        return;
+      }
+
+      await relayJson(res, upstream, route);
+      finish(healthyResult, healthyResult ? "" : `upstream HTTP ${upstream.status}`);
     } catch (e) {
-      res.status(502).json({ error: { message: e.message, provider: route.provider, account: route.account } });
+      finish(false, e?.message || e);
+      if (!res.headersSent) {
+        res.status(502).json({
+          error: {
+            message: e.message,
+            provider: route.provider,
+            account: route.account,
+            routing: route.routing,
+          },
+        });
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    } finally {
+      if (!routeFinished) finish(true);
     }
   });
 
@@ -449,6 +807,7 @@ async function startGateway() {
     console.log(`gptwrap multi-account gateway: http://${HOST}:${PORT}`);
     console.log(`Providers: ${PROVIDERS.join(", ")}`);
     console.log(`Accounts: ${PROVIDERS.map((p) => `${p}=[${configuredAccounts(p).join(",")}]`).join(" ")}`);
+    console.log(`Auto routing: ${AUTO_ROUTE_ACCOUNTS ? "on" : "off"} (${ROUTER_STRATEGY})`);
     console.log(`Child ports start at 127.0.0.1:${CHILD_PORT_BASE}; children launch lazily.`);
     console.log(`API auth: ${API_KEY ? "required" : "disabled"}`);
   });
@@ -465,30 +824,42 @@ async function startGateway() {
 
 async function main() {
   const [command, provider, account] = process.argv.slice(2);
+
   if (command === "login") {
     if (provider) return loginCli(provider, account);
-    for (const p of PROVIDERS) for (const a of configuredAccounts(p)) await loginCli(p, a);
+    for (const p of PROVIDERS) {
+      for (const a of configuredAccounts(p)) await loginCli(p, a);
+    }
     return;
   }
+
   if (command === "discover") {
     if (provider) return discoverCli(provider, account);
     for (const p of PROVIDERS) await discoverCli(p, defaultAccount(p));
     return;
   }
+
   if (command === "accounts") return accountsCli(provider);
   await startGateway();
 }
 
-if (require.main === module) main().catch((e) => { console.error(e); process.exit(1); });
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
 
 module.exports = {
   configuredAccounts,
   defaultAccount,
   resolveAccount,
+  chooseAutoAccount,
   accountRoot,
   accountProfile,
   routeFor,
   startChild,
   stopChild,
   childStatus,
+  routingRecord,
 };
