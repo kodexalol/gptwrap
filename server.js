@@ -20,16 +20,8 @@ const ROLE_CATALOG = [
   { key: 'pilot', label: 'Pilot', group: 'flight' },
   { key: 'cabin-crew', label: 'Cabin crew', group: 'flight' },
   { key: 'ground', label: 'Ground staff', group: 'flight' },
-  { key: 'barista', label: 'Barista', group: 'front' },
-  { key: 'server', label: 'Server', group: 'front' },
-  { key: 'host', label: 'Host', group: 'front' },
-  { key: 'front-desk', label: 'Front desk', group: 'front' },
-  { key: 'room-service', label: 'Room service', group: 'front' },
-  { key: 'lifeguard', label: 'Lifeguard', group: 'front' },
   { key: 'cashier', label: 'Cashier', group: 'front' },
   { key: 'sales', label: 'Sales assistant', group: 'front' },
-  { key: 'kitchen', label: 'Kitchen', group: 'back' },
-  { key: 'housekeeping', label: 'Housekeeping', group: 'back' },
   { key: 'stock', label: 'Stock and supply', group: 'back' },
   { key: 'builder', label: 'Builder and creative', group: 'back' },
   { key: 'trainee', label: 'Trainee', group: 'training' },
@@ -39,13 +31,10 @@ const ROLE_CATALOG = [
 const ROLES = ROLE_CATALOG.map((r) => r.key);
 const ROLE_LABELS = Object.fromEntries(ROLE_CATALOG.map((r) => [r.key, r.label]));
 const ROLE_GROUPS = [['front', 'Customer-facing'], ['back', 'Back of house'], ['flight', 'Flight'], ['training', 'Training'], ['management', 'Management']];
-const KINDS = { airline: 'Airline', cafe: 'Cafe', restaurant: 'Restaurant', hotel: 'Hotel', store: 'Store', other: 'Organisation' };
+const KINDS = { airline: 'Airline', store: 'Roblox store', other: 'Organisation' };
 // The roles most often posted for each kind. Shown first in the role picker; any catalog role is still allowed.
 const KIND_ROLES = {
   airline: ['pilot', 'cabin-crew', 'ground', 'manager', 'other'],
-  cafe: ['barista', 'kitchen', 'server', 'trainee', 'manager', 'other'],
-  restaurant: ['kitchen', 'server', 'host', 'trainee', 'manager', 'other'],
-  hotel: ['front-desk', 'room-service', 'housekeeping', 'lifeguard', 'kitchen', 'manager', 'other'],
   store: ['cashier', 'sales', 'stock', 'builder', 'manager', 'other'],
   other: ['manager', 'trainee', 'other'],
 };

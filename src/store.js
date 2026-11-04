@@ -71,8 +71,6 @@ function seed() {
       airline('air-cobalt', 'cobalt-regional', 'Cobalt Regional', 'Small-fleet regional carrier, growing its crew team this season.', true, created),
       airline('air-skybridge', 'skybridge', 'Skybridge', 'New carrier, still waiting on verification.', false, created),
       airline('air-skyline-store', 'skyline-rostore', 'Skyline Rostore', 'Sample Roblox store selling livery, uniforms and aircraft parts.', true, created, 'store'),
-      airline('air-maple-cafe', 'maple-cafe', 'Maple Cafe', 'Sample cafe. Friendly baristas, weekend shifts, and staff training every Monday.', true, created, 'cafe'),
-      airline('air-lighthouse-hotel', 'lighthouse-hotel', 'Lighthouse Hotel', 'Sample hotel with a lifeguarded pool and a 24-hour front desk.', true, created, 'hotel'),
     ],
     jobs: [
       job('job-first-officer', 'air-northwind', 'First Officer', 'pilot', 'Two-pilot operations, flexible rotations, paid type training. Current licence required.', hoursAgo(72)),
@@ -81,10 +79,6 @@ function seed() {
       job('job-captain', 'air-harbor', 'Captain', 'pilot', 'Short-haul captain role. Strong handling and crew leadership expected.', hoursAgo(48)),
       job('job-gate-agent', 'air-harbor', 'Gate Agent', 'ground', 'Check-in, boarding and gate duties. Weekend availability a plus.', hoursAgo(6)),
       job('job-cabin-lead', 'air-cobalt', 'Cabin Crew Lead', 'cabin-crew', 'Lead a small cabin team and run onboarding for new crew.', hoursAgo(120)),
-      job('job-barista', 'air-maple-cafe', 'Barista', 'barista', 'Sample role. Espresso, friendly service, and weekend opening shifts. Training provided.', hoursAgo(4)),
-      job('job-cafe-trainee', 'air-maple-cafe', 'Trainee', 'trainee', 'Sample role. Learn the bar and the floor. Trainees move to a paid role after a short assessment.', hoursAgo(60)),
-      job('job-front-desk', 'air-lighthouse-hotel', 'Front desk', 'front-desk', 'Sample role. Check-ins, reservations and guest questions across day and evening shifts.', hoursAgo(20)),
-      job('job-lifeguard', 'air-lighthouse-hotel', 'Lifeguard', 'lifeguard', 'Sample role. Pool safety, guest assistance, and a weekly certification check.', hoursAgo(90)),
     ],
     applications: [],
     posts: [

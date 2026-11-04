@@ -5,10 +5,12 @@ const app = $('#app');
 
 // Kinds and roles come from the server (/api/meta), so every Roblox business type is offered in one place.
 let meta = { kinds: [], roles: [], roleGroups: [] };
-const KIND_LABELS = { airline: 'Airline', cafe: 'Cafe', restaurant: 'Restaurant', hotel: 'Hotel', store: 'Store', other: 'Organisation' };
+const KIND_LABELS = { airline: 'Airline', store: 'Roblox store', other: 'Organisation' };
 const roleFilters = () => [['', 'All'], ...meta.roleGroups.map((g) => [g.key, g.label])];
 const roleOptionsHtml = () => meta.roles.map((r) => `<option value="${esc(r.key)}">${esc(r.label)}</option>`).join('');
-const kindOptionsHtml = () => meta.kinds.map((k) => `<option value="${esc(k.key)}">${esc(k.label)}</option>`).join('');
+// Fallback until /api/meta answers, so the dropdown is never empty.
+const FALLBACK_KINDS = [{ key: 'airline', label: 'Airline' }, { key: 'store', label: 'Roblox store' }, { key: 'other', label: 'Other organisation' }];
+const kindOptionsHtml = () => (meta.kinds.length ? meta.kinds : FALLBACK_KINDS).map((k) => `<option value="${esc(k.key)}">${esc(k.label)}</option>`).join('');
 async function loadMeta() {
   try {
     meta = await api('/api/meta');
@@ -315,7 +317,7 @@ async function renderRail() {
   rail.innerHTML = `
     <section class="surface rail-card"><h3>Trending</h3><div id="rail-tags">${loading}</div></section>
     <section class="surface rail-card"><h3>Organisations</h3><div id="rail-airlines">${loading}</div></section>
-    <p class="fine">Jumpseat is a fan project. It is not affiliated with Roblox Corporation or any business listed here.</p>`;
+    <p class="fine">Jumpseat is a fan project. It is not affiliated with Roblox Corporation or any airline or store listed here.</p>`;
   try {
     const [tags, airlines] = await Promise.all([api('/api/tags'), api('/api/airlines')]);
     $('#rail-tags').innerHTML = tags.length
@@ -526,10 +528,10 @@ async function renderHome() {
   app.innerHTML = `
     ${pageHead('Home')}
     <section class="home-hero">
-      <p class="kicker">${guest ? 'Roblox businesses, in one place' : `Welcome back, ${esc(me.user.displayName)}`}</p>
-      <h1 class="display">${guest ? 'Your Roblox business community, in one feed.' : 'Work, hire and get hired.'}</h1>
+      <p class="kicker">${guest ? 'Roblox airlines and stores, in one place' : `Welcome back, ${esc(me.user.displayName)}`}</p>
+      <h1 class="display">${guest ? 'Your airline community, in one feed.' : 'Fly, hire and get hired.'}</h1>
       <p class="lede">${guest
-        ? 'Follow the cafes, hotels, stores and airlines you care about. See what their crews post, and apply to open roles in one tap.'
+        ? 'Follow the airlines and Roblox stores you care about, see what crews post, and apply to open roles without leaving the sky.'
         : 'Your dashboard for organisations, roles and the crew around you.'}</p>
       <div class="cta">
         ${guest
@@ -548,7 +550,7 @@ async function renderHome() {
     <div class="section-head"><h2>Trending</h2></div>
     <div id="home-tags" class="tag-cloud">${loading}</div>
     ${guest ? `<section class="features">
-      ${feature('plane', 'Follow organisations', 'Posts, hiring news and updates from cafes, hotels, stores and airlines.')}
+      ${feature('plane', 'Follow organisations', 'Posts, hiring news and route updates from airlines and Roblox stores.')}
       ${feature('jobs', 'Apply once', 'One application goes straight to the organisation’s Discord.')}
       ${feature('shield', 'Confirmed and verified', 'Accounts confirm their Roblox link. Organisations prove they own their group.')}
     </section>` : ''}`;
@@ -604,7 +606,7 @@ function checklistCard() {
     {
       done: hasOrg,
       title: 'Set up your organisation',
-      text: hasOrg ? `You have ${plural(me.airlines.length, 'organisation')}.` : 'Cafe, hotel, store, airline or another group. Needs a confirmed account.',
+      text: hasOrg ? `You have ${plural(me.airlines.length, 'organisation')}.` : 'Airline, Roblox store or another group. Needs a confirmed account.',
       href: hasOrg ? null : '#/claim',
       cta: 'Set up',
       locked: !confirmed,
@@ -1068,7 +1070,7 @@ async function renderAirlines() {
   app.innerHTML = `
     ${pageHead('Organisations')}
     <div class="toolbar" style="padding-top:18px">
-      <span class="muted grow">Cafes, hotels, stores, airlines and other Roblox groups. Verified ones have proven their Roblox group.</span>
+      <span class="muted grow">Airlines, Roblox stores and other groups. Verified ones have proven their Roblox group.</span>
       <a class="btn primary small" href="#/claim">${icon('plus', { size: 16 })} Set up</a>
     </div>
     <div id="list" class="list">${loading}</div>`;
@@ -1199,7 +1201,7 @@ function renderClaim() {
   }
   app.innerHTML = `
     ${pageHead('Set up an organisation', { back: true })}
-    <p class="lede" style="margin:20px 0;font-size:16px">Add your business, then verify it by signing in with the Roblox account that owns the group. Verified organisations can post roles and updates.</p>
+    <p class="lede" style="margin:20px 0;font-size:16px">Add your airline or store, then verify it by signing in with the Roblox account that owns the group. Verified organisations can post roles and updates.</p>
     <section class="surface">
       <form class="form" data-form="claim">
         <label class="field">Type
