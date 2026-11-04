@@ -307,6 +307,7 @@ let threadPoll = null;
 let renderedMessageIds = new Set();
 let threadStateKey = null;
 let threadPresenceKey = null;
+let currentThread = null;
 
 const NAV = [
   { href: '#/', icon: 'home', label: 'Home', match: /^#\/?$/ },
@@ -911,26 +912,39 @@ function threadHeader(t) {
     </div>`;
 }
 
-// iOS-style conversation header: a large avatar with a status ring (green online, grey offline),
-// and the name in a pill underneath.
+// One circle with a status ring, and a glass pill over its lower edge. Tap for options.
 function iosThreadHead(t) {
-  const blocked = t.reason === 'you-blocked';
   const online = Boolean(t.other.online);
   const name = t.other.displayName;
   return `
-    <header class="ios-head">
-      <a class="ios-avatar-link" href="#/u/${esc(t.other.username)}" aria-label="View ${esc(name)}">
-        <span class="status-ring ${online ? 'online' : 'offline'}" role="img" aria-label="${online ? 'Online' : 'Offline'}">${avatar(name, { size: 'lg' })}</span>
-      </a>
-      <a class="ios-pill" href="#/u/${esc(t.other.username)}">
+    <button class="ios-hero" type="button" data-action="thread-menu" aria-label="Options for ${esc(name)}">
+      <span class="status-ring ${online ? 'online' : 'offline'}" role="img" aria-label="${online ? 'Online' : 'Offline'}">${avatar(name, { size: 'lg' })}</span>
+      <span class="ios-pill">
         <span class="ios-name">${nameLine(name, { badges: t.other.badges })}</span>
-        <span class="ios-status${online ? ' online' : ''}">${online ? 'Online' : 'Offline'}</span>
-      </a>
-      <div class="ios-actions">
-        <button class="btn secondary small" data-action="${blocked ? 'unblock-dm' : 'block-dm'}" data-id="${esc(t.other.id)}">${icon('block', { size: 15 })} ${blocked ? 'Unblock' : 'Block'}</button>
-        <button class="icon-btn" data-action="report-dm" data-id="${esc(t.id)}" aria-label="Report conversation">${icon('flag', { size: 18 })}</button>
+      </span>
+    </button>`;
+}
+
+// The options sheet: profile, block or unblock, report, cancel. Actions reuse the existing handlers.
+function openThreadMenu(t) {
+  if (!t) return;
+  document.querySelector('.sheet-backdrop')?.remove();
+  const blocked = t.reason === 'you-blocked';
+  const name = t.other.displayName;
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.innerHTML = `
+    <div class="sheet menu-sheet" role="dialog" aria-modal="true" aria-label="Options for ${esc(name)}">
+      <div class="menu-head">${avatar(name, { size: 'sm' })}<div><strong>${esc(name)}</strong><div class="muted small">@${esc(t.other.username)}</div></div></div>
+      <div class="sheet-actions">
+        <a class="btn secondary" href="#/u/${esc(t.other.username)}" data-close>View profile</a>
+        <button class="btn secondary" data-action="${blocked ? 'unblock-dm' : 'block-dm'}" data-id="${esc(t.other.id)}">${blocked ? 'Unblock' : 'Block'}</button>
+        <button class="btn secondary" data-action="report-dm" data-id="${esc(t.id)}">Report conversation</button>
+        <button class="btn ghost" type="button" data-close>Cancel</button>
       </div>
-    </header>`;
+    </div>`;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.remove(); });
+  $('#app').appendChild(wrap);
 }
 
 function renderThreadChrome(t) {
@@ -968,6 +982,7 @@ async function loadThread(id, initial) {
   }
   // Rebuild the header and footer only when the conversation state changes. Otherwise typed text survives.
   // Presence can change without the conversation changing. Refresh just the header then.
+  currentThread = t;
   const presence = t.other.online ? 'on' : 'off';
   if (initial || presence !== threadPresenceKey) {
     threadPresenceKey = presence;
@@ -1652,8 +1667,14 @@ app.addEventListener('click', async (e) => {
     return;
   }
 
+  const closer = e.target.closest('[data-close]');
+  if (closer) {
+    closer.closest('.sheet-backdrop')?.remove();
+    return;
+  }
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
+  btn.closest('.sheet-backdrop')?.remove();
   const { action, id } = btn.dataset;
   try {
     if (action === 'back') {
@@ -1712,6 +1733,8 @@ app.addEventListener('click', async (e) => {
       me.linkAllowlist = await send('DELETE', '/api/me/link-allowlist', { scope: btn.dataset.scope, value: btn.dataset.value });
       toast('Removed');
       renderMe();
+    } else if (action === 'thread-menu') {
+      openThreadMenu(currentThread);
     } else if (action === 'theme-toggle') {
       setTheme(isDark() ? 'light' : 'dark');
       renderChrome();

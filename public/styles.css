@@ -21,6 +21,7 @@
   --select-bg: #1c1c1e;
   --overlay: rgba(0, 0, 0, 0.55);
   --sheet-shadow: #000;
+  --glass: rgba(28, 28, 30, 0.55);
   --warn-text: #ffb340;
   --r-lg: 20px;
   --r-md: 14px;
@@ -52,6 +53,7 @@
     --select-bg: #ffffff;
     --overlay: rgba(0, 0, 0, 0.35);
     --sheet-shadow: rgba(0, 0, 0, 0.22);
+    --glass: rgba(255, 255, 255, 0.72);
     --warn-text: #b35c00;
   }
 }
@@ -75,6 +77,7 @@
     --select-bg: #ffffff;
     --overlay: rgba(0, 0, 0, 0.35);
     --sheet-shadow: rgba(0, 0, 0, 0.22);
+    --glass: rgba(255, 255, 255, 0.72);
     --warn-text: #b35c00;
 }
 
@@ -920,3 +923,46 @@ a.row:hover .row-title { text-decoration: underline; text-underline-offset: 3px;
 /* The sidebar theme switch is a real button; reset it to match the links above it. */
 .side-link.theme-quick { background: none; border: 0; width: 100%; text-align: left; font: inherit; font-size: 17px; font-weight: 500; color: var(--text-2); cursor: pointer; }
 .side-link.theme-quick:hover { background: var(--surface); color: var(--text); }
+
+/* ---------- conversation header: one circle, one glass pill over its lower edge ---------- */
+#thread-head { display: grid; justify-items: center; padding: 8px 0 6px; border-bottom: 1px solid var(--hairline); }
+.ios-hero { position: relative; display: inline-grid; justify-items: center; margin: 14px auto 26px; padding: 0; background: none; border: 0; cursor: pointer; color: inherit; }
+.ios-hero .status-ring { display: inline-grid; }
+.ios-pill {
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  max-width: 90%;
+  padding: 7px 18px;
+  border-radius: var(--pill);
+  white-space: nowrap;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--hairline-2);
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.35);
+}
+.ios-hero:hover .ios-pill, .ios-hero:focus-visible .ios-pill { border-color: var(--accent); }
+.ios-hero .ios-name { font-weight: 700; font-size: 16px; display: inline-flex; align-items: center; gap: 2px; }
+.ios-hero .ios-status { font-size: 12px; color: var(--text-2); }
+.ios-hero .ios-status.online { color: var(--ok); }
+.menu-sheet { width: min(360px, 100%); }
+.menu-head { display: flex; align-items: center; gap: 12px; padding-bottom: 6px; }
+
+/* The header circle is the photo; the glass pill sits low inside it so the initial stays visible. */
+.ios-hero { margin: 8px auto 14px; }
+.ios-hero .avatar.lg { width: 124px; height: 124px; font-size: 48px; }
+.ios-hero .status-ring { padding: 5px; border-width: 4px; }
+.ios-pill { bottom: 12px; }
+
+/* One line in the pill: the name, and a small status dot. The ring carries the same signal. */
+.ios-hero .ios-pill { flex-direction: row; align-items: center; gap: 8px; padding: 6px 14px; bottom: 8px; }
+.ios-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); flex: none; }
+.ios-dot.online { background: var(--ok); }
+.ios-hero .ios-name { flex-wrap: nowrap; white-space: nowrap; }
+.ios-hero .ios-pill { bottom: 0; }
