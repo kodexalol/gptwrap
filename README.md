@@ -158,3 +158,14 @@ src/util.js        Helpers: escaping, hashtags, rate limiting
 public/            Single-page frontend (index.html, app.js, styles.css)
 data/              Created at runtime (gitignored)
 ```
+
+## Launch film
+
+`launch/film.html` is a 60-second, 1920×1080 launch film built from real screens of the app. All motion is driven by a timeline, so a render is frame-exact.
+
+```bash
+node launch/render.js <workDir> <out.mp4>        # full film at 30 fps (needs ffmpeg)
+node launch/render.js <workDir> --stills 2,30,50 # a few stills for checking
+```
+
+The screens in `launch/assets/` were captured from the running app with sample data. Re-capture them after UI changes. The film has no music; add a track in your editor before publishing.
