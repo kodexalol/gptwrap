@@ -5,10 +5,12 @@ const path = require('path');
 
 const SEED_TIME = '2026-01-01T00:00:00.000Z';
 
-// Sample airlines and roles so the site has something to show on first run.
-// Every record with sample: true is fake and exists only for local development.
+// Sample content so the site is not empty on first run.
+// Anything marked sample: true is fake and exists only for local development.
 function seed() {
   return {
+    users: [],
+    sessions: [],
     airlines: [
       {
         id: 'air-northwind',
@@ -17,8 +19,9 @@ function seed() {
         description: 'Sample regional airline for local testing.',
         robloxGroupId: null,
         verified: true,
+        ownerUserId: null,
         ownerRobloxId: null,
-        manageTokenHash: null,
+        createdByUserId: null,
         discordInvite: null,
         discordWebhook: null,
         sample: true,
@@ -31,8 +34,9 @@ function seed() {
         description: 'Sample short-haul carrier with a small fleet.',
         robloxGroupId: null,
         verified: true,
+        ownerUserId: null,
         ownerRobloxId: null,
-        manageTokenHash: null,
+        createdByUserId: null,
         discordInvite: null,
         discordWebhook: null,
         sample: true,
@@ -69,16 +73,49 @@ function seed() {
       },
     ],
     applications: [],
+    posts: [
+      {
+        id: 'post-sample-1',
+        authorType: 'airline',
+        airlineId: 'air-northwind',
+        authorUserId: null,
+        body: 'Sample post: first flights of the week are on the board. Two pilot seats open. #hiring #pilots',
+        imageUrl: null,
+        tags: ['hiring', 'pilots'],
+        hidden: false,
+        createdAt: SEED_TIME,
+      },
+      {
+        id: 'post-sample-2',
+        authorType: 'airline',
+        airlineId: 'air-harbor',
+        authorUserId: null,
+        body: 'Sample post: new gate team starts Monday. Welcome aboard! #ground #teamwork',
+        imageUrl: null,
+        tags: ['ground', 'teamwork'],
+        hidden: false,
+        createdAt: SEED_TIME,
+      },
+    ],
+    comments: [],
+    likes: [],
+    follows: [],
+    reports: [],
   };
 }
 
-// Small JSON-file store. Fine for an MVP; swap for SQLite or Postgres before real traffic.
+// Small JSON-file store. Fine for a prototype; move to SQLite or Postgres before real traffic.
 class Store {
   constructor(file) {
     this.file = file;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (fs.existsSync(file)) {
       this.data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Add any collections missing from an older database file.
+      const base = seed();
+      for (const key of Object.keys(base)) {
+        if (!Array.isArray(this.data[key])) this.data[key] = base[key];
+      }
     } else {
       this.data = seed();
       this.save();
