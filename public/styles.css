@@ -1029,3 +1029,9 @@ body.in-thread .thread-foot { position: static; flex: none; margin: 0 -24px; pad
 .ios-hero .ios-name { font-size: 14px; }
 /* At the smaller size, drop the pill a little so the initial stays visible. */
 .ios-hero .ios-pill { bottom: -18px; }
+
+/* Smaller name pill: smaller text, tighter padding, smaller verified badge. */
+.ios-hero .ios-pill { padding: 2px 8px; }
+.ios-hero .ios-name { font-size: 11px; gap: 4px; }
+.ios-hero .ios-pill .badge { width: 13px; height: 13px; margin-left: 0; }
+.ios-hero .ios-pill .badge svg { width: 8px; height: 8px; }
