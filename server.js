@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { Store } = require('./src/store');
 const auth = require('./src/auth');
-const { now, sha256, escapeHtml, byNewest, isHttpsUrl, extractTags, rateLimit } = require('./src/util');
+const { now, sha256, escapeHtml, byNewest, extractTags, parseMedia, rateLimit } = require('./src/util');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
@@ -111,7 +111,8 @@ function publicPost(post, viewer) {
   return {
     id: post.id,
     body: post.body,
-    imageUrl: post.imageUrl,
+    imageUrl: post.imageUrl || null,
+    video: post.video || null,
     tags: post.tags,
     createdAt: post.createdAt,
     author: authorOf(post),
@@ -448,6 +449,8 @@ app.get('/api/users/:username', (req, res) => {
     following: followingCount(u.id),
     isMe: Boolean(req.user) && req.user.id === u.id,
     followedByMe: isFollowing(req.user?.id, 'user', u.id),
+    blockedByMe: Boolean(req.user) && blockedBy(req.user.id, u.id),
+    canMessage: Boolean(req.user) && req.user.id !== u.id && !isBlocked(req.user.id, u.id),
     airlines,
     posts,
   });
@@ -538,13 +541,13 @@ app.post('/api/posts', requireUser, (req, res) => {
     return fail(res, 429, 'Slow down. Try again in a few minutes.');
   }
   const body = String(req.body?.body || '').trim();
-  const imageUrl = String(req.body?.imageUrl || '').trim();
+  const mediaInput = String(req.body?.media || req.body?.imageUrl || '').trim();
   const airlineSlug = String(req.body?.airlineSlug || '').trim();
 
   if (!body || body.length > LIMITS.postBody) return fail(res, 400, `Post must be 1–${LIMITS.postBody} characters`);
-  if (imageUrl && (imageUrl.length > 500 || !isHttpsUrl(imageUrl))) {
-    return fail(res, 400, 'Image must be an https:// link under 500 characters');
-  }
+  const parsed = parseMedia(mediaInput);
+  if (parsed.error) return fail(res, 400, parsed.error);
+  const media = parsed.media;
 
   let airline = null;
   if (airlineSlug) {
@@ -559,7 +562,8 @@ app.post('/api/posts', requireUser, (req, res) => {
     airlineId: airline ? airline.id : null,
     authorUserId: req.user.id,
     body,
-    imageUrl: imageUrl || null,
+    imageUrl: media?.type === 'image' ? media.imageUrl : null,
+    video: media?.type === 'video' ? media.video : null,
     tags: extractTags(body),
     hidden: false,
     createdAt: now(),
@@ -863,6 +867,224 @@ app.post('/api/jobs/:id/applications', async (req, res) => {
   }
   store.save();
   res.status(201).json({ ok: true, delivered: application.delivered });
+});
+
+// ---------- direct messages ----------
+//
+// Rules, enforced here and not in the browser:
+//  - Starting a conversation creates a *request*. The recipient must accept before they can reply.
+//  - Until accepted, the sender may send one message and then has to wait.
+//  - Either side can block, which stops all messages both ways. Either side can decline or report.
+//  - Only participants can read a conversation. Non-participants get a 404.
+
+const DM_TEXT_MAX = 1000;
+const DM_REASONS = {
+  'you-blocked': 'You blocked this account. Unblock to message again.',
+  'they-blocked': 'You cannot message this account.',
+  waiting: 'Wait for them to accept your request before sending more.',
+  request: 'Accept the request to reply.',
+};
+
+const blockedBy = (blockerId, blockedId) =>
+  store.data.blocks.some((b) => b.blockerId === blockerId && b.blockedId === blockedId);
+const isBlocked = (a, b) => blockedBy(a, b) || blockedBy(b, a);
+const findConversation = (a, b) =>
+  store.data.conversations.find((c) => c.participantIds.includes(a) && c.participantIds.includes(b));
+const findConversationFor = (id, user) => {
+  const conv = store.data.conversations.find((c) => c.id === id);
+  return conv && conv.participantIds.includes(user.id) ? conv : null;
+};
+const otherParticipant = (conv, userId) => conv.participantIds.find((id) => id !== userId);
+const messagesIn = (convId) =>
+  store.data.messages
+    .filter((m) => m.conversationId === convId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+function miniUser(id) {
+  const u = store.data.users.find((x) => x.id === id);
+  return u
+    ? { id: u.id, username: u.username, displayName: u.displayName || u.username }
+    : { id, username: 'unknown', displayName: 'unknown' };
+}
+
+function unreadFor(conv, userId) {
+  const readAt = conv.readAt?.[userId] || '';
+  return store.data.messages.filter(
+    (m) => m.conversationId === conv.id && m.senderUserId !== userId && m.createdAt > readAt,
+  ).length;
+}
+
+// What this user may do in this conversation right now, decided on the server.
+function sendState(conv, user) {
+  const other = otherParticipant(conv, user.id);
+  if (blockedBy(user.id, other)) return { canSend: false, reason: 'you-blocked' };
+  if (blockedBy(other, user.id)) return { canSend: false, reason: 'they-blocked' };
+  if (conv.status === 'accepted') return { canSend: true, reason: null };
+  if (conv.status === 'pending') {
+    if (conv.initiatorUserId === user.id) {
+      const sentOne = store.data.messages.some((m) => m.conversationId === conv.id && m.senderUserId === user.id);
+      return sentOne ? { canSend: false, reason: 'waiting' } : { canSend: true, reason: null };
+    }
+    return { canSend: false, reason: 'request' };
+  }
+  return { canSend: false, reason: 'declined' };
+}
+
+function publicConversation(conv, user) {
+  const msgs = messagesIn(conv.id);
+  const last = msgs[msgs.length - 1];
+  return {
+    id: conv.id,
+    status: conv.status,
+    role: conv.initiatorUserId === user.id ? 'initiator' : 'recipient',
+    other: miniUser(otherParticipant(conv, user.id)),
+    lastMessage: last ? { body: last.body, createdAt: last.createdAt, mine: last.senderUserId === user.id } : null,
+    unread: unreadFor(conv, user.id),
+    updatedAt: conv.updatedAt,
+  };
+}
+
+app.get('/api/conversations', requireUser, (req, res) => {
+  const me = req.user;
+  const conversations = store.data.conversations
+    .filter((c) => c.participantIds.includes(me.id) && c.status !== 'declined' && !isBlocked(me.id, otherParticipant(c, me.id)))
+    .map((c) => ({
+      ...publicConversation(c, me),
+      kind: c.status === 'pending' && c.initiatorUserId !== me.id ? 'request' : 'inbox',
+    }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const totalUnread = conversations.reduce((sum, c) => sum + c.unread, 0);
+  res.json({ conversations, totalUnread });
+});
+
+app.post('/api/conversations', requireUser, (req, res) => {
+  if (!rateLimit(`dm-start:${req.user.id}`, 10, 10 * 60 * 1000)) {
+    return fail(res, 429, 'Too many new conversations. Try again later.');
+  }
+  const target = findUserByUsername(String(req.body?.username || '').trim());
+  if (!target) return fail(res, 404, 'No Jumpseat account with that username');
+  if (target.id === req.user.id) return fail(res, 400, "You can't message yourself");
+  if (isBlocked(req.user.id, target.id)) return fail(res, 403, 'You cannot message this account');
+
+  const existing = findConversation(req.user.id, target.id);
+  if (existing) {
+    if (existing.status === 'declined') {
+      return fail(res, 403, existing.initiatorUserId === req.user.id
+        ? 'This account is not accepting messages from you'
+        : 'You declined this conversation');
+    }
+    return res.json(publicConversation(existing, req.user));
+  }
+
+  const conv = {
+    id: crypto.randomUUID(),
+    participantIds: [req.user.id, target.id],
+    initiatorUserId: req.user.id,
+    status: 'pending',
+    readAt: {},
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  store.data.conversations.push(conv);
+  store.save();
+  res.status(201).json(publicConversation(conv, req.user));
+});
+
+app.get('/api/conversations/:id', requireUser, (req, res) => {
+  const conv = findConversationFor(req.params.id, req.user);
+  if (!conv || conv.status === 'declined') return fail(res, 404, 'Conversation not found');
+
+  const other = miniUser(otherParticipant(conv, req.user.id));
+  const state = sendState(conv, req.user);
+  const messages = messagesIn(conv.id)
+    .slice(-200)
+    .map((m) => ({ id: m.id, body: m.body, createdAt: m.createdAt, mine: m.senderUserId === req.user.id }));
+
+  if (unreadFor(conv, req.user.id) > 0) {
+    conv.readAt = { ...(conv.readAt || {}), [req.user.id]: now() };
+    store.save();
+  }
+  res.json({
+    id: conv.id,
+    status: conv.status,
+    role: conv.initiatorUserId === req.user.id ? 'initiator' : 'recipient',
+    other,
+    canSend: state.canSend,
+    reason: state.reason,
+    reasonText: state.reason ? DM_REASONS[state.reason] || 'You cannot send messages here' : null,
+    messages,
+  });
+});
+
+app.post('/api/conversations/:id/messages', requireUser, (req, res) => {
+  const conv = findConversationFor(req.params.id, req.user);
+  if (!conv || conv.status === 'declined') return fail(res, 404, 'Conversation not found');
+
+  const state = sendState(conv, req.user);
+  if (!state.canSend) return fail(res, 403, DM_REASONS[state.reason] || 'You cannot send messages here');
+  if (!rateLimit(`dm:${req.user.id}`, 30, 10 * 60 * 1000)) return fail(res, 429, 'Slow down. Try again in a few minutes.');
+
+  const body = String(req.body?.body || '').trim();
+  if (!body || body.length > DM_TEXT_MAX) return fail(res, 400, `Message must be 1–${DM_TEXT_MAX} characters`);
+
+  const message = { id: crypto.randomUUID(), conversationId: conv.id, senderUserId: req.user.id, body, createdAt: now() };
+  store.data.messages.push(message);
+  conv.updatedAt = message.createdAt;
+  store.save();
+  res.status(201).json({ id: message.id, body, createdAt: message.createdAt, mine: true });
+});
+
+app.post('/api/conversations/:id/accept', requireUser, (req, res) => {
+  const conv = findConversationFor(req.params.id, req.user);
+  if (!conv) return fail(res, 404, 'Conversation not found');
+  if (conv.status !== 'pending' || conv.initiatorUserId === req.user.id) return fail(res, 400, 'Nothing to accept');
+  conv.status = 'accepted';
+  conv.updatedAt = now();
+  store.save();
+  res.json(publicConversation(conv, req.user));
+});
+
+app.post('/api/conversations/:id/decline', requireUser, (req, res) => {
+  const conv = findConversationFor(req.params.id, req.user);
+  if (!conv) return fail(res, 404, 'Conversation not found');
+  if (conv.status !== 'pending' || conv.initiatorUserId === req.user.id) return fail(res, 400, 'Nothing to decline');
+  conv.status = 'declined';
+  conv.updatedAt = now();
+  store.save();
+  res.json({ ok: true });
+});
+
+app.post('/api/conversations/:id/report', requireUser, (req, res) => {
+  const conv = findConversationFor(req.params.id, req.user);
+  if (!conv) return fail(res, 404, 'Conversation not found');
+  const reason = String(req.body?.reason || '').trim().slice(0, LIMITS.reportReason) || 'unspecified';
+  store.data.reports.push({
+    id: crypto.randomUUID(),
+    conversationId: conv.id,
+    reporterUserId: req.user.id,
+    reason,
+    createdAt: now(),
+  });
+  store.save();
+  res.json({ ok: true });
+});
+
+// Toggle a block. Blocking stops messages both ways. It does not hide public posts.
+app.post('/api/users/:id/block', requireUser, (req, res) => {
+  const target = store.data.users.find((u) => u.id === req.params.id);
+  if (!target) return fail(res, 404, 'User not found');
+  if (target.id === req.user.id) return fail(res, 400, "You can't block yourself");
+  const idx = store.data.blocks.findIndex((b) => b.blockerId === req.user.id && b.blockedId === target.id);
+  let blocked;
+  if (idx >= 0) {
+    store.data.blocks.splice(idx, 1);
+    blocked = false;
+  } else {
+    store.data.blocks.push({ blockerId: req.user.id, blockedId: target.id, createdAt: now() });
+    blocked = true;
+  }
+  store.save();
+  res.json({ blocked });
 });
 
 // ---------- errors ----------

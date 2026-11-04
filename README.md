@@ -7,7 +7,10 @@ Jumpseat is an independent fan project. It is not affiliated with or endorsed by
 ## What's in it
 
 - **Home feed.** Posts from the airlines and people you follow, plus a popular feed for everyone else.
-- **Posts.** Text up to 500 characters, `#hashtags`, an optional https image, likes, comments, and reports.
+- **Posts.** Text up to 500 characters, `#hashtags`, one media item (image, video, or YouTube/Vimeo link), likes, comments, and reports.
+- **Direct messages.** Message requests, one-message-until-accepted, blocking, declining, and reporting. Thread view updates every 3 seconds.
+- **Video.** Post a direct `.mp4` or `.webm` link, or a YouTube or Vimeo link. Embeds use privacy-enhanced hosts (youtube-nocookie.com). Jumpseat does not host or upload video.
+- **Motion.** Views cross-fade where supported, content rises in, likes pop, and loading uses skeleton placeholders. All motion is disabled when the OS asks for reduced motion.
 - **Discover.** Search across airlines, people, posts, and roles. Browse popular tags.
 - **Airlines.** Public profiles with followers, posts, and open roles. Verified airlines can post as the airline.
 - **Jobs.** Filterable open roles with a one-step application.
@@ -60,7 +63,7 @@ All routes are under `/api` and return JSON. Writes need a signed-in session.
 | GET | `/api/users/:username` | Profile, follower counts, posts |
 | GET | `/api/feed` | Posts from people and airlines you follow |
 | GET | `/api/posts?sort=new\|top&tag=&airline=` | Public post list |
-| POST | `/api/posts` | `{ body, imageUrl?, airlineSlug? }` (`airlineSlug` requires ownership) |
+| POST | `/api/posts` | `{ body, media?, airlineSlug? }`. `media` is an image, video, or YouTube/Vimeo link. `airlineSlug` requires ownership |
 | GET | `/api/posts/:id` | Post with comments |
 | DELETE | `/api/posts/:id` | Author or airline owner only |
 | POST | `/api/posts/:id/like` | Toggles like |
@@ -79,6 +82,22 @@ All routes are under `/api` and return JSON. Writes need a signed-in session.
 | GET | `/api/jobs?role=&q=` | Open roles from verified airlines |
 | GET | `/api/jobs/:id` | One role |
 | POST | `/api/jobs/:id/applications` | `{ robloxUsername, message? }`. Forwarded to Discord if a webhook is set |
+| GET | `/api/conversations` | Your inbox and requests, with unread counts |
+| POST | `/api/conversations` | `{ username }`. Starts a request, or returns the existing conversation |
+| GET | `/api/conversations/:id` | Thread (last 200 messages). Marks it read. Participants only |
+| POST | `/api/conversations/:id/messages` | `{ body }`. Enforces the request rules below |
+| POST | `/api/conversations/:id/accept` | Recipient accepts a request |
+| POST | `/api/conversations/:id/decline` | Recipient declines a request |
+| POST | `/api/conversations/:id/report` | `{ reason? }`. Recorded for moderators |
+| POST | `/api/users/:id/block` | Toggles a block. Stops messages in both directions |
+
+**Message rules** (enforced on the server, not the browser):
+
+1. Starting a conversation creates a *request*. The recipient can't reply until they accept.
+2. Before acceptance, the sender can send one message and must wait.
+3. A declined request closes for both people.
+4. Blocking stops messages both ways. It does not hide public posts.
+5. Non-participants get a 404 for a conversation, so you can't probe for IDs.
 
 Roles are `pilot`, `cabin-crew`, and `ground`.
 
@@ -91,7 +110,11 @@ These are not done yet:
 - **Move rate limits to shared storage.** They are in memory, so they reset on restart and don't work across several servers.
 - **Review image hosting.** Image links are https-only but can point anywhere. Consider proxying or allow-listing hosts, since embedded images reveal viewer IPs and can serve unsafe content.
 - **Encrypt webhooks.** Discord webhook URLs are stored in plain text and act like passwords.
-- **Add a moderator tool.** Reports currently hide posts automatically, with no review queue or appeal.
+- **Add a moderator tool.** Reports currently hide posts automatically, with no review queue or appeal. Conversation reports are stored but nothing reviews them yet.
+- **Child safety. This is the most important item.** Roblox's audience includes many minors. Direct messages and linked video are exactly where grooming and harassment happen. Before launch you need: age-appropriate defaults (for example, DMs off for accounts that look young, or limited to people who already follow each other), parental controls, a way to report that reaches a human within a set time, and clear obligations under your jurisdiction's rules (COPPA in the US, the UK Online Safety Act, and similar). This prototype does not meet those requirements.
+- **Link safety.** Messages are plain text and are not linkified, which avoids phishing links in DMs. Video links from arbitrary `.mp4` hosts can serve anything, so consider allow-listing hosts or proxying files.
+- **Hosting video.** Direct uploads would need storage, transcoding, size limits, and scanning. None of that exists yet.
+- **Realtime.** Messages poll every 3 seconds. Replace with server-sent events or WebSockets once traffic justifies it.
 - **Check the name.** "Jumpseat" is a working name. Search for trademark and app-store conflicts before launch. Don't use the Roblox name or logo in the brand.
 - **Add real content rules.** Write terms of use and a community guideline, and make sure the report flow works for each post.
 

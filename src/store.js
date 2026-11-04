@@ -93,6 +93,9 @@ function seed() {
     ],
     follows: [],
     reports: [],
+    conversations: [],
+    messages: [],
+    blocks: [],
   };
 }
 

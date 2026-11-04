@@ -5,6 +5,7 @@ const app = $('#app');
 
 const ROLE_FILTERS = [['', 'All'], ['pilot', 'Pilots'], ['cabin-crew', 'Cabin crew'], ['ground', 'Ground ops']];
 const ROLE_OPTIONS = { pilot: 'Pilot', 'cabin-crew': 'Cabin crew', ground: 'Ground ops' };
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
 
 // ---------- helpers ----------
 
@@ -15,7 +16,7 @@ const esc = (value) =>
 const linkify = (text) =>
   esc(text).replace(/#([A-Za-z0-9_]{2,30})/g, (_, tag) => `<a class="tag-link" href="#/tag/${tag.toLowerCase()}">#${tag}</a>`);
 
-const loading = '<p class="empty">Loading…</p>';
+const loading = '<div class="skeleton" aria-busy="true" aria-label="Loading"><span></span><span></span><span></span></div>';
 const errorBox = (message) => `<p class="error-box">${esc(message)}</p>`;
 const initial = (name) => esc(String(name || '?').trim().charAt(0).toUpperCase() || '?');
 const safeDecode = (value) => {
@@ -36,6 +37,8 @@ function timeLong(iso) {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
+
+const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -75,9 +78,12 @@ const ICONS = {
   back: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
+  video: '<rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/>',
   external: '<path d="M14 4h6v6M20 4 10 14M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
   shield: '<path d="M12 3 4 6v6c0 4.5 3.4 8.2 8 9 4.6-.8 8-4.5 8-9V6z"/>',
-  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.5A6.5 6.5 0 0 1 21.5 20"/>',
+  send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/>',
+  block: '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/>',
 };
 const icon = (name, { filled = false, size = 20 } = {}) =>
   `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="${filled ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -99,22 +105,29 @@ let me = { user: null, airlines: [] };
 let homeTab = 'following';
 let airlineTab = 'posts';
 let airlineTabFor = null;
+let messagesTab = 'inbox';
 let jobFilter = { role: '', q: '' };
+let unreadTotal = 0;
+let threadPoll = null;
+let renderedMessageIds = new Set();
 
 const NAV = [
   { href: '#/', icon: 'home', label: 'Home', match: /^#\/?$/ },
   { href: '#/discover', icon: 'search', label: 'Discover', match: /^#\/discover/ },
   { href: '#/jobs', icon: 'jobs', label: 'Jobs', match: /^#\/(jobs|job\/)/ },
   { href: '#/airlines', icon: 'plane', label: 'Airlines', match: /^#\/(airlines|airline\/|claim)/ },
+  { href: '#/messages', icon: 'message', label: 'Messages', match: /^#\/messages/, badge: true },
   { href: '#/me', icon: 'user', label: 'Profile', match: /^#\/(me|u\/)/ },
 ];
+
+const badge = (count) => (count > 0 ? `<span class="nav-badge" aria-label="${count} unread">${count > 99 ? '99+' : count}</span>` : '');
 
 function renderChrome() {
   const hash = location.hash || '#/';
   $('#side-nav').innerHTML = NAV.map((n) =>
-    `<a class="side-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 22 })}<span>${n.label}</span></a>`).join('');
+    `<a class="side-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 22 })}<span>${n.label}</span>${n.badge ? badge(unreadTotal) : ''}</a>`).join('');
   $('#tabbar').innerHTML = NAV.map((n) =>
-    `<a class="tab-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 24 })}<span>${n.label}</span></a>`).join('');
+    `<a class="tab-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 24 })}<span>${n.label}</span>${n.badge && unreadTotal ? `<span class="tab-dot"></span>` : ''}</a>`).join('');
 
   $('#account').innerHTML = me.user
     ? `<a class="account" href="#/me">${avatar(me.user.displayName)}<span class="account-text"><strong>${esc(me.user.displayName)}</strong><span class="muted">@${esc(me.user.username)}</span></span></a>`
@@ -130,6 +143,19 @@ async function loadMe() {
   renderChrome();
 }
 
+async function refreshUnread() {
+  if (!me.user) return;
+  try {
+    const data = await api('/api/conversations');
+    if (data.totalUnread !== unreadTotal) {
+      unreadTotal = data.totalUnread;
+      renderChrome();
+    }
+  } catch {
+    /* offline or signed out: keep the last count */
+  }
+}
+
 async function renderRail() {
   const rail = $('#rail');
   rail.innerHTML = `
@@ -139,7 +165,7 @@ async function renderRail() {
   try {
     const [tags, airlines] = await Promise.all([api('/api/tags'), api('/api/airlines')]);
     $('#rail-tags').innerHTML = tags.length
-      ? tags.slice(0, 5).map((t) => `<a class="tag-row" href="#/tag/${esc(t.tag)}"><span>#${esc(t.tag)}</span><span class="muted">${t.count} posts</span></a>`).join('')
+      ? tags.slice(0, 5).map((t) => `<a class="tag-row" href="#/tag/${esc(t.tag)}"><span>#${esc(t.tag)}</span><span class="muted">${t.count} post${t.count === 1 ? '' : 's'}</span></a>`).join('')
       : '<p class="muted">No tags yet.</p>';
     $('#rail-airlines').innerHTML = airlines.length
       ? airlines.slice(0, 4).map((a) => `
@@ -170,6 +196,27 @@ function seg(scope, options, current) {
     `<button role="tab" class="${value === current ? 'on' : ''}" data-scope="${scope}" data-tab="${value}" aria-selected="${value === current}">${label}</button>`).join('')}</div>`;
 }
 
+function embed(src, title) {
+  return `<div class="embed"><iframe src="${esc(src)}" title="${esc(title)}" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>`;
+}
+
+// Images, uploaded-by-link video files, and YouTube or Vimeo embeds. Only one media type per post.
+function mediaHtml(p) {
+  if (p.video?.kind === 'file') {
+    return `<video class="post-media" src="${esc(p.video.src)}" controls playsinline preload="metadata" referrerpolicy="no-referrer"></video>`;
+  }
+  if (p.video?.kind === 'youtube') {
+    return embed(`https://www.youtube-nocookie.com/embed/${encodeURIComponent(p.video.id)}`, 'YouTube video');
+  }
+  if (p.video?.kind === 'vimeo') {
+    return embed(`https://player.vimeo.com/video/${encodeURIComponent(p.video.id)}`, 'Vimeo video');
+  }
+  if (p.imageUrl) {
+    return `<img class="post-img" src="${esc(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+  }
+  return '';
+}
+
 function postCard(p) {
   const isAirline = p.author.type === 'airline';
   const href = isAirline ? `#/airline/${esc(p.author.slug)}` : `#/u/${esc(p.author.username)}`;
@@ -184,7 +231,7 @@ function postCard(p) {
           ${p.canDelete ? `<button class="icon-btn quiet" data-action="delete" data-id="${esc(p.id)}" aria-label="Delete post">${icon('trash', { size: 16 })}</button>` : ''}
         </header>
         <div class="post-body">${linkify(p.body)}</div>
-        ${p.imageUrl ? `<img class="post-img" src="${esc(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}
+        ${mediaHtml(p)}
         <footer class="post-actions">
           <button class="act${p.likedByMe ? ' on' : ''}" data-action="like" data-id="${esc(p.id)}" aria-pressed="${p.likedByMe}" aria-label="Like">${icon('heart', { filled: p.likedByMe, size: 18 })}<span>${p.likeCount}</span></button>
           <a class="act" href="#/post/${esc(p.id)}" aria-label="Comments">${icon('message', { size: 18 })}<span>${p.commentCount}</span></a>
@@ -256,7 +303,7 @@ function composer(defaultAirlineSlug = null) {
       <div class="composer-main">
         <textarea name="body" rows="2" maxlength="500" placeholder="What's happening in the skies?" aria-label="Post text" required></textarea>
         <div class="composer-tools">
-          <label class="url-field">${icon('image', { size: 15 })}<input name="imageUrl" type="url" placeholder="Image link (https)" maxlength="500" aria-label="Image link"></label>
+          <label class="url-field">${icon('video', { size: 15 })}<input name="media" type="url" placeholder="Image, video or YouTube/Vimeo link" maxlength="500" aria-label="Media link"></label>
           ${owned.length ? `<select name="airlineSlug" aria-label="Post as">${options}</select>` : ''}
           <button class="btn primary small" type="submit">Post</button>
         </div>
@@ -302,7 +349,7 @@ function bindForm(selector, handler, onSuccess) {
 function bindComposer() {
   bindForm('[data-form="composer"]', (data) => send('POST', '/api/posts', {
     body: data.body,
-    imageUrl: data.imageUrl || undefined,
+    media: data.media || undefined,
     airlineSlug: data.airlineSlug || undefined,
   }), () => {
     toast('Posted');
@@ -318,7 +365,6 @@ async function loadFeed() {
     let posts = me.user && homeTab === 'following' ? await api('/api/feed') : await api('/api/posts?sort=top');
     let notice = '';
     if (me.user && homeTab === 'following' && !posts.length) {
-      // Nothing followed yet: show what is popular and say why.
       posts = await api('/api/posts?sort=top');
       notice = '<div class="surface notice">You are not following anyone yet. Follow airlines or crew in Discover and their posts will land here. Popular posts are shown for now.</div>';
     }
@@ -450,6 +496,190 @@ async function renderPost(id) {
   } catch (err) {
     app.innerHTML = `${pageHead('Post', { back: true })}${errorBox(err.message)}`;
   }
+}
+
+// ---------- views: messages ----------
+
+function convoRow(c) {
+  const preview = c.lastMessage
+    ? `${c.lastMessage.mine ? 'You: ' : ''}${esc(c.lastMessage.body)}`
+    : (c.role === 'initiator' ? 'Request sent. Waiting for a reply.' : 'Wants to message you.');
+  return `
+    <a class="row convo${c.unread ? ' unread' : ''}" href="#/messages/${esc(c.id)}">
+      ${avatar(c.other.displayName)}
+      <div class="row-main">
+        <div class="row-title">${esc(c.other.displayName)}${c.other.displayName !== c.other.username ? ` <span class="handle-sm">@${esc(c.other.username)}</span>` : ''}</div>
+        <div class="row-sub clamp">${preview}</div>
+      </div>
+      <div class="row-end">
+        <span>${timeAgo(c.updatedAt)}</span>
+        ${c.unread ? `<span class="unread-dot">${c.unread}</span>` : ''}
+      </div>
+    </a>`;
+}
+
+async function renderMessages() {
+  app.innerHTML = `
+    ${pageHead('Messages')}
+    ${me.user ? '' : signInPrompt('Your messages', 'Sign in with Roblox to send and read direct messages.')}
+    ${me.user ? `
+      <div class="toolbar" style="padding-top:16px">${seg('messages', [['inbox', 'Inbox'], ['request', 'Requests']], messagesTab)}</div>
+      <p class="muted small" style="padding:10px 0 0">${messagesTab === 'request'
+        ? 'People you have not chatted with yet. Accept to reply.'
+        : 'Your conversations. Only accepted chats show here.'}</p>
+      <div id="convos" class="list">${loading}</div>` : ''}`;
+  if (!me.user) return;
+
+  try {
+    const data = await api('/api/conversations');
+    unreadTotal = data.totalUnread;
+    renderChrome();
+    const items = data.conversations.filter((c) => c.kind === messagesTab);
+    $('#convos').innerHTML = items.length
+      ? items.map(convoRow).join('')
+      : `<p class="empty">${messagesTab === 'request'
+        ? 'No message requests.'
+        : 'No conversations yet. Open someone’s profile and tap Message to start one.'}</p>`;
+  } catch (err) {
+    $('#convos').innerHTML = errorBox(err.message);
+  }
+}
+
+function bubbleHtml(m, animate) {
+  return `
+    <div class="bubble-row${m.mine ? ' mine' : ''}${animate ? ' new' : ''}" data-msg="${esc(m.id)}">
+      <div class="bubble">${esc(m.body)}</div>
+      <span class="bubble-time">${clock(m.createdAt)}</span>
+    </div>`;
+}
+
+// Appends only messages we have not drawn yet, so existing bubbles are never re-animated or re-rendered.
+function appendMessages(messages, animate) {
+  const box = $('#messages');
+  if (!box) return;
+  const fresh = messages.filter((m) => !renderedMessageIds.has(m.id));
+  if (!fresh.length) return;
+  const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 240;
+  box.querySelector('.empty')?.remove();
+  box.insertAdjacentHTML('beforeend', fresh.map((m) => bubbleHtml(m, animate)).join(''));
+  fresh.forEach((m) => renderedMessageIds.add(m.id));
+  if (nearBottom || fresh.some((m) => m.mine)) {
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: animate && !REDUCED_MOTION.matches ? 'smooth' : 'auto' });
+  }
+}
+
+function threadFooter(t) {
+  const other = t.other.displayName;
+  switch (t.reason) {
+    case null:
+      return `
+        ${t.status === 'pending' ? `<p class="thread-note">Request sent. You can send one message until ${esc(other)} accepts.</p>` : ''}
+        <form class="thread-compose" data-form="dm">
+          <textarea name="body" rows="1" maxlength="1000" placeholder="Message" aria-label="Message" required></textarea>
+          <button class="btn primary" type="submit" aria-label="Send">${icon('send', { size: 18 })}</button>
+        </form>
+        <p class="form-status" data-status></p>`;
+    case 'request':
+      return `
+        <div class="request-bar">
+          <p class="thread-note">${esc(other)} wants to message you.</p>
+          <div class="hero-actions" style="margin:0">
+            <button class="btn primary small" data-action="accept-dm" data-id="${esc(t.id)}">Accept</button>
+            <button class="btn secondary small" data-action="decline-dm" data-id="${esc(t.id)}">Decline</button>
+          </div>
+        </div>`;
+    case 'waiting':
+      return `<p class="thread-note">Waiting for ${esc(other)} to accept your request.</p>`;
+    case 'you-blocked':
+      return `<p class="thread-note">You blocked ${esc(other)}. Unblock to message again.</p>`;
+    default:
+      return `<p class="thread-note">${esc(t.reasonText || 'You cannot message this account.')}</p>`;
+  }
+}
+
+function threadHeader(t) {
+  const blocked = t.reason === 'you-blocked';
+  return `
+    <div class="thread-head">
+      <a class="row" style="border:0;padding:0;flex:1" href="#/u/${esc(t.other.username)}">
+        ${avatar(t.other.displayName, { size: 'sm' })}
+        <div class="row-main">
+          <div class="row-title">${esc(t.other.displayName)}</div>
+          <div class="row-sub">@${esc(t.other.username)}</div>
+        </div>
+      </a>
+      <button class="btn secondary small" data-action="${blocked ? 'unblock-dm' : 'block-dm'}" data-id="${esc(t.other.id)}">${icon('block', { size: 15 })} ${blocked ? 'Unblock' : 'Block'}</button>
+      <button class="icon-btn" data-action="report-dm" data-id="${esc(t.id)}" aria-label="Report conversation">${icon('flag', { size: 18 })}</button>
+    </div>`;
+}
+
+function renderThreadChrome(t) {
+  $('#thread-head').innerHTML = threadHeader(t);
+  $('#thread-foot').innerHTML = threadFooter(t);
+  bindForm('[data-form="dm"]', (data) => send('POST', `/api/conversations/${encodeURIComponent(t.id)}/messages`, { body: data.body }), (msg, form) => {
+    form.reset();
+    appendMessages([msg], true);
+    renderedMessageIds.add(msg.id);
+  });
+  const dmForm = $('[data-form="dm"]');
+  if (dmForm) {
+    const ta = dmForm.querySelector('textarea');
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        dmForm.requestSubmit();
+      }
+    });
+    ta.addEventListener('input', () => {
+      ta.style.height = 'auto';
+      ta.style.height = `${Math.min(ta.scrollHeight, 140)}px`;
+    });
+  }
+}
+
+let threadStateKey = null;
+
+async function loadThread(id, initial) {
+  if (location.hash !== `#/messages/${id}`) return;
+  let t;
+  try {
+    t = await api(`/api/conversations/${encodeURIComponent(id)}`);
+  } catch (err) {
+    if (initial) app.innerHTML = `${pageHead('Message', { back: true })}${errorBox(err.message)}`;
+    stopThreadPoll();
+    return;
+  }
+  // Rebuild the header and footer only when the conversation state changes. Otherwise typed text survives.
+  const key = `${t.status}|${t.reason}|${t.canSend}`;
+  if (initial || key !== threadStateKey) {
+    threadStateKey = key;
+    renderThreadChrome(t);
+  }
+  if (initial) {
+    $('#messages').innerHTML = t.messages.length ? '' : '<p class="empty">Say hello.</p>';
+    appendMessages(t.messages, false);
+    window.scrollTo({ top: document.documentElement.scrollHeight });
+  } else {
+    appendMessages(t.messages, true);
+  }
+}
+
+function stopThreadPoll() {
+  if (threadPoll) clearInterval(threadPoll);
+  threadPoll = null;
+}
+
+async function renderThread(id) {
+  stopThreadPoll();
+  threadStateKey = null;
+  renderedMessageIds = new Set();
+  app.innerHTML = `
+    ${pageHead('Message', { back: true })}
+    <div id="thread-head"></div>
+    <div id="messages" class="messages">${loading}</div>
+    <div id="thread-foot" class="thread-foot"></div>`;
+  await loadThread(id, true);
+  threadPoll = setInterval(() => loadThread(id, false), 3000);
 }
 
 // ---------- views: jobs ----------
@@ -701,10 +931,20 @@ async function renderUser(username) {
     const runs = u.airlines.length
       ? `<p class="muted">Runs ${u.airlines.map((a) => `<a class="tag-link" href="#/airline/${esc(a.slug)}">${esc(a.name)}</a>`).join(', ')}</p>`
       : '';
-    let action = '';
-    if (u.isMe) action = '<a class="btn secondary" href="#/me">Edit profile</a>';
-    else if (me.user) action = `<button class="btn ${u.followedByMe ? 'secondary' : 'primary'}" data-action="follow" data-type="user" data-id="${esc(u.id)}">${u.followedByMe ? 'Following' : 'Follow'}</button>`;
-    else action = '<a class="btn secondary" href="/auth/login">Sign in to follow</a>';
+
+    let actions = '';
+    if (u.isMe) {
+      actions = '<a class="btn secondary" href="#/me">Edit profile</a>';
+    } else if (!me.user) {
+      actions = '<a class="btn secondary" href="/auth/login">Sign in to follow or message</a>';
+    } else {
+      actions = `<button class="btn ${u.followedByMe ? 'secondary' : 'primary'}" data-action="follow" data-type="user" data-id="${esc(u.id)}">${u.followedByMe ? 'Following' : 'Follow'}</button>`;
+      if (u.blockedByMe) {
+        actions += ` <button class="btn secondary" data-action="block-user" data-id="${esc(u.id)}">${icon('block', { size: 15 })} Unblock</button>`;
+      } else if (u.canMessage) {
+        actions += ` <button class="btn secondary" data-action="message" data-username="${esc(u.username)}">${icon('message', { size: 15 })} Message</button>`;
+      }
+    }
 
     app.innerHTML = `
       ${pageHead(u.displayName, { back: true })}
@@ -719,7 +959,7 @@ async function renderUser(username) {
             <div class="stats"><span><b>${u.followers}</b> followers</span><span><b>${u.following}</b> following</span><span><b>${u.posts.length}</b> posts</span></div>
           </div>
         </div>
-        <div class="profile-actions">${action}</div>
+        <div class="profile-actions">${actions}</div>
       </section>
       <div class="feed" style="margin-top:4px">${u.posts.length ? u.posts.map(postCard).join('') : '<p class="empty">No posts yet.</p>'}</div>`;
   } catch (err) {
@@ -729,7 +969,7 @@ async function renderUser(username) {
 
 function renderMe() {
   if (!me.user) {
-    app.innerHTML = `${pageHead('Profile')}${signInPrompt('Your Jumpseat account', 'Sign in with Roblox to post, follow, apply and list your airline.')}`;
+    app.innerHTML = `${pageHead('Profile')}${signInPrompt('Your Jumpseat account', 'Sign in with Roblox to post, follow, apply and message.')}`;
     return;
   }
   const listings = me.airlines.length
@@ -787,6 +1027,8 @@ function renderMe() {
 const routes = [
   [/^#\/?$/, () => renderHome()],
   [/^#\/discover(?:\?q=(.*))?$/, (m) => renderDiscover(safeDecode(m[1]))],
+  [/^#\/messages$/, () => renderMessages()],
+  [/^#\/messages\/([\w-]+)$/, (m) => renderThread(m[1])],
   [/^#\/jobs$/, () => renderJobs()],
   [/^#\/job\/([\w-]+)$/, (m) => renderJob(m[1])],
   [/^#\/airlines$/, () => renderAirlines()],
@@ -798,8 +1040,10 @@ const routes = [
   [/^#\/claim$/, () => renderClaim()],
 ];
 
-function route() {
+function renderRoute() {
   const hash = location.hash || '#/';
+  stopThreadPoll();
+  document.body.classList.toggle('in-thread', /^#\/messages\/[\w-]+$/.test(hash));
   window.scrollTo(0, 0);
   renderChrome();
   renderRail();
@@ -811,14 +1055,24 @@ function route() {
   return undefined;
 }
 
-// Clicks are handled in one place: tabs, like, report, delete, follow, sign out, back.
+// Cross-fade between views where the browser supports it. Motion is skipped under reduced-motion.
+function route() {
+  if (document.startViewTransition && !REDUCED_MOTION.matches) {
+    document.startViewTransition(() => renderRoute());
+  } else {
+    renderRoute();
+  }
+}
+
+// Clicks are handled in one place: tabs, like, report, delete, follow, DMs, sign out, back.
 app.addEventListener('click', async (e) => {
   const tab = e.target.closest('[data-tab]');
   if (tab) {
     const value = tab.dataset.tab;
     if (tab.dataset.scope === 'home') homeTab = value;
     else if (tab.dataset.scope === 'airline') airlineTab = value;
-    if (tab.dataset.scope === 'jobs') return; // handled by the jobs filter listener
+    else if (tab.dataset.scope === 'messages') messagesTab = value;
+    else if (tab.dataset.scope === 'jobs') return; // handled by the jobs filter listener
     route();
     return;
   }
@@ -835,6 +1089,7 @@ app.addEventListener('click', async (e) => {
       btn.classList.toggle('on', r.liked);
       btn.setAttribute('aria-pressed', String(r.liked));
       btn.innerHTML = `${icon('heart', { filled: r.liked, size: 18 })}<span>${r.likeCount}</span>`;
+      if (r.liked) btn.querySelector('svg').classList.add('pop');
     } else if (action === 'report') {
       if (!confirm('Report this post to the moderators?')) return;
       await send('POST', `/api/posts/${id}/report`, { reason: 'reported from feed' });
@@ -854,6 +1109,26 @@ app.addEventListener('click', async (e) => {
       await send('POST', '/api/follows', { targetType: btn.dataset.type, targetId: id });
       await loadMe();
       route();
+    } else if (action === 'message') {
+      const conv = await send('POST', '/api/conversations', { username: btn.dataset.username });
+      location.hash = `#/messages/${conv.id}`;
+    } else if (action === 'block-user' || action === 'block-dm' || action === 'unblock-dm') {
+      if (action === 'block-dm' && !confirm('Block this account? They will not be able to message you, and you will not be able to message them.')) return;
+      const r = await send('POST', `/api/users/${id}/block`);
+      toast(r.blocked ? 'Blocked' : 'Unblocked');
+      route();
+    } else if (action === 'accept-dm') {
+      await send('POST', `/api/conversations/${id}/accept`);
+      toast('Request accepted');
+      route();
+    } else if (action === 'decline-dm') {
+      if (!confirm('Decline this request? They will not be able to message you here.')) return;
+      await send('POST', `/api/conversations/${id}/decline`);
+      location.hash = '#/messages';
+    } else if (action === 'report-dm') {
+      if (!confirm('Report this conversation to the moderators? The other person will not be told.')) return;
+      await send('POST', `/api/conversations/${id}/report`, { reason: 'reported conversation' });
+      toast('Report sent');
     } else if (action === 'logout') {
       await send('POST', '/auth/logout');
       await loadMe();
@@ -868,4 +1143,8 @@ app.addEventListener('click', async (e) => {
 
 // Start the router last, after every view and handler is defined.
 window.addEventListener('hashchange', route);
-loadMe().then(route);
+loadMe().then(() => {
+  route();
+  refreshUnread();
+  setInterval(refreshUnread, 15000);
+});
