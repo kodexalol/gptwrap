@@ -169,3 +169,11 @@ node launch/render.js <workDir> --stills 2,30,50 # a few stills for checking
 ```
 
 The screens in `launch/assets/` were captured from the running app with sample data. Re-capture them after UI changes. The film has no music; add a track in your editor before publishing.
+
+The current film is 30 seconds, with a synthesised 120 BPM track. Re-render the track and mux it:
+
+```bash
+node launch/music.js <work>/launch-track.wav
+node launch/render.js <work>/render <work>/film-silent.mp4
+ffmpeg -i <work>/film-silent.mp4 -i <work>/launch-track.wav -map 0:v -map 1:a -c:v copy -c:a aac -shortest out.mp4
+```

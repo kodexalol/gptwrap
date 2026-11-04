@@ -5,17 +5,17 @@
 <title>Jumpseat · Launch film</title>
 <style>
 /*
-  Launch film. 1920×1080, 30 fps, 60 seconds.
-  Every animation is a CSS animation with a fixed delay, so render.js can seek the whole
-  film to any frame exactly (see render.js). Nothing here depends on real time.
+  Launch film. 1920×1080, 30 fps, 30 seconds, 120 BPM (see music.js).
+  Every motion is a CSS animation with a fixed delay, so render.js can seek any frame exactly.
+  Cuts land on beats: 2, 4, 5, 6, 7, 8, 11, 14, 17, 20, 23, 27 seconds.
 */
 :root {
   --ink: #f5f5f7;
   --sub: #a1a1a6;
   --faint: #6e6e73;
   --accent: #0a84ff;
+  --accent-2: #4da3ff;
   --ok: #30d158;
-  --gold: #f2c14e;
   --font: "Inter", "SF Pro Display", -apple-system, "Helvetica Neue", Arial, sans-serif;
 }
 * { box-sizing: border-box; }
@@ -23,7 +23,20 @@ html, body { margin: 0; background: #000; width: 1920px; height: 1080px; overflo
 body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
 .stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: #000; }
 
-/* Scenes fade in and out. --s is the start time, --d the duration, both in seconds. */
+/* ---------- global motion: grid, progress, beat pulse ---------- */
+.grid-bg {
+  position: absolute;
+  inset: -80px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><path d='M80 0H0V80' fill='none' stroke='rgba(255,255,255,0.07)' stroke-width='1'/></svg>");
+  animation: grid-move 2s linear infinite;
+}
+@keyframes grid-move { from { transform: translate(0, 0); } to { transform: translate(80px, 80px); } }
+.progress { position: absolute; left: 0; right: 0; bottom: 0; height: 6px; background: var(--accent); transform-origin: left; transform: scaleX(0); animation: progress 30s linear 0s both; }
+@keyframes progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.metro { position: absolute; left: 50%; bottom: 40px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--accent); animation: beat 0.5s ease-out infinite; }
+@keyframes beat { 0% { transform: scale(1.9); opacity: 1; } 100% { transform: scale(1); opacity: 0.35; } }
+
+/* ---------- scenes: hard cuts ---------- */
 .scene {
   position: absolute;
   inset: 0;
@@ -33,191 +46,331 @@ body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: anti
   justify-content: center;
   text-align: center;
   opacity: 0;
-  animation: scene-io calc(var(--d) * 1s) linear calc(var(--s) * 1s) both;
+  animation: cut calc(var(--d) * 1s) linear calc(var(--s) * 1s) both;
 }
-@keyframes scene-io {
+/* Hidden before the scene starts, shown for its duration, hidden after. Hard cut at both edges. */
+@keyframes cut {
   0% { opacity: 0; }
-  6% { opacity: 1; }
-  90% { opacity: 1; }
+  0.01% { opacity: 1; }
+  99.99% { opacity: 1; }
   100% { opacity: 0; }
 }
 
-/* Anything inside a scene animates in with an offset (--o) from the scene start. */
-.in { animation: rise 1.25s cubic-bezier(0.2, 0.7, 0.1, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
-.shot { animation: shot 1.8s cubic-bezier(0.16, 0.8, 0.2, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
-.pop { animation: pop 1.1s cubic-bezier(0.2, 0.9, 0.2, 1.1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
-@keyframes rise {
-  from { opacity: 0; transform: translateY(34px); filter: blur(10px); }
-  to { opacity: 1; transform: none; filter: blur(0); }
-}
-@keyframes shot {
-  from { opacity: 0; transform: perspective(2200px) rotateX(18deg) translateY(170px) scale(0.92); }
-  to { opacity: 1; transform: perspective(2200px) rotateX(0) translateY(0) scale(1); }
-}
-@keyframes pop {
-  from { opacity: 0; transform: scale(0.72); filter: blur(14px); }
-  to { opacity: 1; transform: none; filter: blur(0); }
-}
+/* ---------- motion vocabulary. --s is the scene start, --o the offset. ---------- */
+.slam { animation: slam 0.42s cubic-bezier(0.1, 0.9, 0.2, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+.rise { animation: rise 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+.pop { animation: pop 0.55s cubic-bezier(0.3, 1.7, 0.5, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+.fromside { animation: fromside 0.36s cubic-bezier(0.1, 0.9, 0.2, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+.fromup { animation: fromup 0.7s cubic-bezier(0.25, 1.35, 0.4, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+.fade { animation: fade 0.25s linear both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+@keyframes slam { from { opacity: 0; transform: translateY(90px) scale(0.9); filter: blur(8px); } to { opacity: 1; transform: none; filter: blur(0); } }
+@keyframes rise { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: none; } }
+@keyframes pop { from { opacity: 0; transform: scale(0.35); } to { opacity: 1; transform: none; } }
+@keyframes fromside { from { opacity: 0; transform: translateX(var(--dx, 380px)) rotate(var(--rot, -5deg)) scale(1.06); } to { opacity: 1; transform: none; } }
+@keyframes fromup { from { opacity: 0; transform: translateY(1000px) rotate(var(--rot, -10deg)); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes ripple { from { transform: scale(0.2); opacity: 0.9; } to { transform: scale(3.2); opacity: 0; } }
 
-/* Type */
-.kicker { font-size: 38px; font-weight: 500; color: var(--sub); letter-spacing: -0.01em; margin: 0 0 22px; }
-.title { font-size: 112px; line-height: 1.02; font-weight: 700; letter-spacing: -0.045em; margin: 0; }
-.title .dim { color: var(--sub); }
-.caption { position: absolute; top: 96px; left: 0; right: 0; text-align: center; }
-.caption h2 { font-size: 84px; font-weight: 700; letter-spacing: -0.04em; line-height: 1.04; margin: 0; }
-.caption p { font-size: 34px; color: var(--sub); margin: 18px 0 0; letter-spacing: -0.01em; }
+/* ---------- type ---------- */
+.kicker { font-size: 36px; font-weight: 600; color: var(--accent-2); letter-spacing: -0.01em; margin: 0 0 22px; text-transform: none; }
+.headline { font-size: 104px; line-height: 1.0; font-weight: 700; letter-spacing: -0.05em; margin: 0; }
+.headline .dim { color: var(--sub); }
+.caption { position: absolute; top: 90px; left: 0; right: 0; text-align: center; }
+.caption h2 { font-size: 88px; font-weight: 700; letter-spacing: -0.045em; line-height: 1.02; margin: 0; }
+.caption p { font-size: 32px; color: var(--sub); margin: 16px 0 0; letter-spacing: -0.01em; }
+.ch, .wd { display: inline-block; white-space: pre; }
+.wd { margin-right: 0.22em; }
 
-/* Product screens: rounded, hairline edge, soft shadow. No gradients. */
+/* ---------- product screens ---------- */
 .screen {
   position: absolute;
-  left: 420px;
-  top: 350px;
-  width: 1080px;
-  border-radius: 26px;
+  left: 50%;
+  margin-left: -520px;
+  top: 300px;
+  width: 1040px;
+  border-radius: 24px;
   overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 70px 140px -40px rgba(0, 0, 0, 0.9);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 60px 120px -40px rgba(0, 0, 0, 0.95);
 }
 .screen img { display: block; width: 100%; height: auto; }
-
-.phone {
+.tag-pill {
   position: absolute;
-  top: 210px;
-  height: 700px;
-  border-radius: 58px;
-  overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 60px 120px -30px rgba(0, 0, 0, 0.95);
+  left: 120px;
+  top: 150px;
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--ink);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 10px 24px;
 }
-.phone img { display: block; height: 100%; width: auto; }
+.tag-pill b { color: var(--accent-2); font-weight: 700; margin-right: 14px; }
 
-/* Badges: the same artwork as the app */
-.badges { position: absolute; top: 330px; left: 0; right: 0; display: flex; justify-content: center; gap: 110px; }
-.badge-item { display: grid; justify-items: center; gap: 28px; width: 360px; }
-.bg { width: 230px; height: 230px; border-radius: 50%; display: grid; place-items: center; }
-.bg svg { width: 58%; height: 58%; }
+/* ---------- badges ---------- */
+.badges { position: absolute; top: 330px; left: 0; right: 0; display: flex; justify-content: center; gap: 70px; }
+.badge-item { display: grid; justify-items: center; gap: 22px; width: 330px; }
+.badge-art { position: relative; width: 260px; height: 260px; display: grid; place-items: center; }
+.orbit { position: absolute; inset: 0; width: 100%; height: 100%; animation: spin 6s linear infinite; }
+.bg { width: 220px; height: 220px; border-radius: 50%; display: grid; place-items: center; }
+.bg svg { width: 56%; height: 56%; }
 .b-confirmed { background: #30d158; }
 .b-admin { background: linear-gradient(160deg, #ff6b6b 0%, #d7261e 55%, #8e0d0a 100%); }
 .b-org { background: #0a84ff; }
-.clover { width: 230px; height: 230px; }
-.badge-name { font-size: 36px; font-weight: 600; letter-spacing: -0.02em; }
-.badge-note { font-size: 24px; color: var(--sub); margin-top: -18px; }
+.clover { width: 220px; height: 220px; }
+.badge-name { font-size: 34px; font-weight: 650; letter-spacing: -0.02em; }
+.badge-note { font-size: 23px; color: var(--sub); margin-top: -14px; }
 
-/* Brand */
+/* ---------- presence ring ---------- */
+.presence { position: relative; width: 340px; height: 340px; display: grid; place-items: center; }
+.ring-big {
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  border: 18px solid var(--faint);
+  display: grid;
+  place-items: center;
+  background: #1c1c1e;
+  animation: ring-flip 3s steps(1, end) 0s both;
+  animation-delay: calc(var(--s) * 1s + var(--o, 0s));
+}
+@keyframes ring-flip {
+  0% { border-color: #6e6e73; }
+  33% { border-color: #6e6e73; }
+  33.4% { border-color: #30d158; }
+  66% { border-color: #30d158; }
+  66.4% { border-color: #6e6e73; }
+  100% { border-color: #6e6e73; }
+}
+.ring-letter { font-size: 150px; font-weight: 700; color: #fff; }
+.status-line { position: relative; height: 60px; margin-top: 46px; font-size: 44px; font-weight: 600; }
+.status-line span { position: absolute; left: 0; right: 0; text-align: center; }
+.st-off { animation: st-off 3s steps(1, end) both; animation-delay: calc(var(--s) * 1s + var(--o, 0s)); color: var(--sub); }
+.st-on { animation: st-on 3s steps(1, end) both; animation-delay: calc(var(--s) * 1s + var(--o, 0s)); color: var(--ok); }
+@keyframes st-off { 0% { opacity: 1; } 33% { opacity: 1; } 33.4% { opacity: 0; } 66% { opacity: 0; } 66.4% { opacity: 1; } 100% { opacity: 1; } }
+@keyframes st-on { 0% { opacity: 0; } 33% { opacity: 0; } 33.4% { opacity: 1; } 66% { opacity: 1; } 66.4% { opacity: 0; } 100% { opacity: 0; } }
+.pill-name { display: inline-flex; align-items: center; gap: 14px; font-size: 40px; font-weight: 700; background: #1c1c1e; border: 2px solid rgba(255,255,255,0.1); padding: 14px 34px; border-radius: 999px; }
+
+/* ---------- links: cursor and ripple ---------- */
+.cursor { position: absolute; left: 0; top: 0; width: 44px; height: 44px; z-index: 5; animation: cursor-move 0.7s cubic-bezier(0.4, 0, 0.2, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+@keyframes cursor-move { from { transform: translate(1480px, 930px); } to { transform: translate(960px, 668px); } }
+.ripple { position: absolute; left: 960px; top: 668px; width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%; border: 4px solid #fff; z-index: 4; animation: ripple 0.5s ease-out both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+
+/* ---------- phones ---------- */
+.phone { position: absolute; top: 300px; height: 690px; border-radius: 56px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255,255,255,0.18), 0 60px 120px -30px rgba(0,0,0,0.95); }
+.phone img { display: block; height: 100%; width: auto; }
+
+/* ---------- flight ---------- */
+.plane { position: absolute; left: 0; top: 0; width: 130px; height: 130px; margin: -65px 0 0 -65px; offset-path: path("M -120 930 C 520 770, 1240 1010, 2040 640"); offset-rotate: auto 0deg; animation: fly 2.4s cubic-bezier(0.45, 0, 0.25, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+.plane svg { width: 100%; height: 100%; }
+.plane path { fill: #fff; }
+@keyframes fly { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+.trail { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+.trail path { fill: none; stroke: var(--accent-2); stroke-width: 4; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; pathLength: 1; animation: draw 2.4s cubic-bezier(0.45, 0, 0.25, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+
+/* ---------- brand ---------- */
 .mark { width: 230px; height: 230px; border-radius: 52px; background: var(--accent); display: grid; place-items: center; }
 .mark svg { width: 128px; height: 128px; }
 .mark path { fill: #fff; }
-.wordmark { font-size: 150px; font-weight: 700; letter-spacing: -0.05em; margin: 34px 0 0; }
-
-.ring-demo { display: inline-grid; padding: 9px; border-radius: 50%; border: 10px solid var(--ok); }
+.wordmark { font-size: 160px; font-weight: 700; letter-spacing: -0.055em; margin: 30px 0 0; }
+.underline { width: 720px; height: 6px; border-radius: 3px; background: var(--accent); margin-top: 26px; transform-origin: left; transform: scaleX(0); animation: underline 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: calc((var(--s) + var(--o, 0)) * 1s); }
+@keyframes underline { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 </style>
 </head>
 <body>
 <div class="stage" id="stage">
+  <div class="grid-bg"></div>
 
-  <!-- 1 · 0.0 – 5.2 · Introducing -->
-  <section class="scene" style="--s:0; --d:5.2">
-    <p class="kicker in" style="--o:0.2s">Introducing</p>
-    <div class="mark pop" style="--o:1.1s">
-      <svg viewBox="0 0 64 64"><path d="M14 30.5 50 16l-9.5 34-8.2-12.4-8.6-5.6z"/></svg>
-    </div>
-    <p class="wordmark in" style="--o:2.1s">Jumpseat</p>
+  <!-- A · 0–2 · Introducing -->
+  <section class="scene" style="--s:0; --d:2">
+    <p class="kicker fade" style="--s:0; --o:0.05s">Introducing</p>
+    <div class="mark pop" style="--s:0; --o:0.25s"><svg viewBox="0 0 64 64"><path d="M14 30.5 50 16l-9.5 34-8.2-12.4-8.6-5.6z"/></svg></div>
+    <p class="wordmark" data-split="letters" data-base="0.55" data-step="0.045" style="--s:0"></p>
   </section>
 
-  <!-- 2 · 4.6 – 9.6 · Statement -->
-  <section class="scene" style="--s:4.6; --d:5">
-    <h1 class="title in" style="--o:0.2s">Roblox aviation,</h1>
-    <h1 class="title dim in" style="--o:1.0s">in one place.</h1>
+  <!-- B · 2–4 · Statement -->
+  <section class="scene" style="--s:2; --d:2">
+    <h1 class="headline" data-split="words" data-base="0.0" data-step="0.14" style="--s:2"></h1>
+    <h1 class="headline dim" data-split="words" data-base="0.5" data-step="0.14" style="--s:2"></h1>
   </section>
 
-  <!-- 3 · 9.2 – 14.4 · Home -->
-  <section class="scene" style="--s:9.2; --d:5.2">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Start with your dashboard.</h2><p class="in" style="--o:0.5s">Setup, open roles, and the crews around you.</p></div>
-    <div class="screen shot" style="--s:9.2; --o:0.4s; top:360px; width:1080px"><img src="assets/home.jpg" alt=""></div>
+  <!-- C · 4–8 · Montage, one screen per beat -->
+  <section class="scene" style="--s:4; --d:1">
+    <div class="tag-pill slam" style="--s:4; --o:0.1s"><b>01</b>Dashboard</div>
+    <div class="screen fromside" style="--s:4; --o:0s; --dx:-420px; --rot:-4deg"><img src="assets/home.jpg" alt=""></div>
+  </section>
+  <section class="scene" style="--s:5; --d:1">
+    <div class="tag-pill slam" style="--s:5; --o:0.1s"><b>02</b>Feed</div>
+    <div class="screen fromside" style="--s:5; --o:0s; --dx:420px; --rot:4deg"><img src="assets/feed.jpg" alt=""></div>
+  </section>
+  <section class="scene" style="--s:6; --d:1">
+    <div class="tag-pill slam" style="--s:6; --o:0.1s"><b>03</b>Roles</div>
+    <div class="screen fromside" style="--s:6; --o:0s; --dx:-420px; --rot:-4deg"><img src="assets/job.jpg" alt=""></div>
+  </section>
+  <section class="scene" style="--s:7; --d:1">
+    <div class="tag-pill slam" style="--s:7; --o:0.1s"><b>04</b>Messages</div>
+    <div class="screen fromside" style="--s:7; --o:0s; --dx:420px; --rot:4deg"><img src="assets/chat.jpg" alt=""></div>
   </section>
 
-  <!-- 4 · 13.8 – 18.8 · Feed -->
-  <section class="scene" style="--s:13.8; --d:5">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Follow the airlines you fly with.</h2><p class="in" style="--o:0.5s">Posts, hiring news and route updates, in one feed.</p></div>
-    <div class="screen shot" style="--s:13.8; --o:0.4s; top:360px; width:1080px"><img src="assets/feed.jpg" alt=""></div>
-  </section>
-
-  <!-- 5 · 18.4 – 23.6 · Jobs -->
-  <section class="scene" style="--s:18.4; --d:5.2">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Apply once.</h2><p class="in" style="--o:0.5s">Your application goes straight to their Discord.</p></div>
-    <div class="screen shot" style="--s:18.4; --o:0.4s; top:360px; width:1080px"><img src="assets/job.jpg" alt=""></div>
-  </section>
-
-  <!-- 6 · 23.2 – 28.6 · Messages -->
-  <section class="scene" style="--s:23.2; --d:5.4">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Messages that feel like messages.</h2><p class="in" style="--o:0.5s">Requests first. Presence in a glance. Blocking in one tap.</p></div>
-    <div class="screen shot" style="--s:23.2; --o:0.4s; top:360px; width:1080px"><img src="assets/chat.jpg" alt=""></div>
-  </section>
-
-  <!-- 7 · 28.6 – 35.0 · Badges -->
-  <section class="scene" style="--s:28.6; --d:6.4">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Trust, shown plainly.</h2><p class="in" style="--o:0.5s">Every badge is earned, and every badge means one thing.</p></div>
+  <!-- D · 8–11 · Badges -->
+  <section class="scene" style="--s:8; --d:3">
+    <div class="caption"><h2 class="slam" data-split="words" data-base="0.05" data-step="0.09" style="--s:8"></h2></div>
     <div class="badges">
-      <div class="badge-item pop" style="--s:28.6; --o:0.9s">
-        <div class="bg b-confirmed"><svg viewBox="0 0 24 24"><path d="M3.5 11.2 12 4.4l8.5 6.8V19a1 1 0 0 1-1 1h-4.6v-5.6h-5.8V20H4.5a1 1 0 0 1-1-1z" fill="#fff"/></svg></div>
+      <div class="badge-item pop" style="--s:8; --o:0.3s">
+        <div class="badge-art">
+          <svg class="orbit" viewBox="0 0 260 260"><circle cx="130" cy="130" r="122" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="2" stroke-dasharray="4 12"/></svg>
+          <div class="bg b-confirmed"><svg viewBox="0 0 24 24"><path d="M3.5 11.2 12 4.4l8.5 6.8V19a1 1 0 0 1-1 1h-4.6v-5.6h-5.8V20H4.5a1 1 0 0 1-1-1z" fill="#fff"/></svg></div>
+        </div>
         <div class="badge-name">Confirmed</div>
         <div class="badge-note">Roblox linked with a code</div>
       </div>
-      <div class="badge-item pop" style="--s:28.6; --o:1.5s">
-        <svg class="clover" viewBox="0 0 24 24"><g fill="#f2c14e"><circle cx="8" cy="8" r="4.6"/><circle cx="16" cy="8" r="4.6"/><circle cx="8" cy="16" r="4.6"/><circle cx="16" cy="16" r="4.6"/><circle cx="12" cy="12" r="5.2"/></g><path d="M8.6 12.3l2.2 2.2 3.9-4.1" fill="none" stroke="#5c3d00" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="badge-item pop" style="--s:8; --o:0.55s">
+        <div class="badge-art">
+          <svg class="orbit" viewBox="0 0 260 260"><circle cx="130" cy="130" r="122" fill="none" stroke="rgba(242,193,78,0.5)" stroke-width="2" stroke-dasharray="4 12"/></svg>
+          <svg class="clover" viewBox="0 0 24 24"><g fill="#f2c14e"><circle cx="8" cy="8" r="4.6"/><circle cx="16" cy="8" r="4.6"/><circle cx="8" cy="16" r="4.6"/><circle cx="16" cy="16" r="4.6"/><circle cx="12" cy="12" r="5.2"/></g><path d="M8.6 12.3l2.2 2.2 3.9-4.1" fill="none" stroke="#5c3d00" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
         <div class="badge-name">Verified member</div>
         <div class="badge-note">Granted by admins</div>
       </div>
-      <div class="badge-item pop" style="--s:28.6; --o:2.1s">
-        <div class="bg b-admin"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div>
+      <div class="badge-item pop" style="--s:8; --o:0.8s">
+        <div class="badge-art">
+          <svg class="orbit" viewBox="0 0 260 260"><circle cx="130" cy="130" r="122" fill="none" stroke="rgba(255,107,107,0.5)" stroke-width="2" stroke-dasharray="4 12"/></svg>
+          <div class="bg b-admin"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div>
+        </div>
         <div class="badge-name">Admin</div>
         <div class="badge-note">Set in configuration</div>
       </div>
-      <div class="badge-item pop" style="--s:28.6; --o:2.7s">
-        <div class="bg b-org"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17l9-10"/></svg></div>
+      <div class="badge-item pop" style="--s:8; --o:1.05s">
+        <div class="badge-art">
+          <svg class="orbit" viewBox="0 0 260 260"><circle cx="130" cy="130" r="122" fill="none" stroke="rgba(10,132,255,0.5)" stroke-width="2" stroke-dasharray="4 12"/></svg>
+          <div class="bg b-org"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17l9-10"/></svg></div>
+        </div>
         <div class="badge-name">Verified organisation</div>
         <div class="badge-note">Its group owner has signed in</div>
       </div>
     </div>
   </section>
 
-  <!-- 8 · 35.2 – 40.6 · Links -->
-  <section class="scene" style="--s:35.2; --d:5.4">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Links ask first.</h2><p class="in" style="--o:0.5s">See where a link goes, then decide. Allow a site once, or for good.</p></div>
-    <div class="screen shot" style="--s:35.2; --o:0.4s; top:360px; width:1080px"><img src="assets/links.jpg" alt=""></div>
+  <!-- E · 11–14 · Links ask first -->
+  <section class="scene" style="--s:11; --d:3">
+    <div class="caption"><h2 class="slam" data-split="words" data-base="0.05" data-step="0.09" style="--s:11"></h2></div>
+    <div class="screen fromup" style="--s:11; --o:0.1s; top:330px; width:1000px; margin-left:-500px; --rot:0deg"><img src="assets/links.jpg" alt=""></div>
+    <div class="cursor" style="--s:11; --o:0.9s"><svg viewBox="0 0 44 44" width="44" height="44"><path d="M8 4 L8 34 L16 27 L22 40 L27 38 L21 25 L32 25 Z" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg></div>
+    <div class="ripple" style="--s:11; --o:1.6s"></div>
   </section>
 
-  <!-- 9 · 40.8 – 46.2 · Organisations -->
-  <section class="scene" style="--s:40.8; --d:5.4">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Organisations, run by their crews.</h2><p class="in" style="--o:0.5s">Airlines, Roblox stores and other groups, each with its roles and its own page.</p></div>
-    <div class="screen shot" style="--s:40.8; --o:0.4s; top:360px; width:1080px"><img src="assets/org-roles.jpg" alt=""></div>
-  </section>
-
-  <!-- 10 · 46.4 – 52.6 · Everywhere -->
-  <section class="scene" style="--s:46.4; --d:6.2">
-    <div class="caption"><h2 class="in" style="--o:0.1s">Everywhere you crew.</h2></div>
-    <div class="phone shot" style="--s:46.4; --o:0.4s; left: 617px"><img src="assets/chat-phone.jpg" alt=""></div>
-    <div class="phone shot" style="--s:46.4; --o:0.7s; left: 977px"><img src="assets/feed-phone.jpg" alt=""></div>
-  </section>
-
-  <!-- 11 · 52.4 – 60.0 · Close -->
-  <section class="scene" style="--s:52.4; --d:7.6">
-    <div class="mark pop" style="--s:52.4; --o:0.2s; width:200px; height:200px; border-radius:46px">
-      <svg viewBox="0 0 64 64" style="width:112px;height:112px"><path d="M14 30.5 50 16l-9.5 34-8.2-12.4-8.6-5.6z"/></svg>
+  <!-- F · 14–17 · Presence -->
+  <section class="scene" style="--s:14; --d:3">
+    <div class="caption"><h2 class="slam" data-split="words" data-base="0.05" data-step="0.09" style="--s:14"></h2></div>
+    <div class="presence pop" style="--s:14; --o:0.25s; top:0; margin-top:120px">
+      <div class="ring-big" style="--s:14; --o:0.8s"><span class="ring-letter">K</span></div>
     </div>
-    <p class="wordmark in" style="--o:0.9s; font-size:120px; margin-top:30px">Jumpseat</p>
-    <p class="kicker in" style="--o:1.8s; margin-top:26px">Apply once. Fly with anyone.</p>
+    <div class="pill-name pop" style="--s:14; --o:0.45s; margin-top:-40px">Kai</div>
+    <div class="status-line">
+      <span class="st-off" style="--s:14; --o:0.8s">Offline</span>
+      <span class="st-on" style="--s:14; --o:0.8s">Online</span>
+    </div>
   </section>
 
+  <!-- G · 17–20 · Everywhere -->
+  <section class="scene" style="--s:17; --d:3">
+    <div class="caption"><h2 class="slam" data-split="words" data-base="0.05" data-step="0.09" style="--s:17"></h2></div>
+    <div class="phone fromup" style="--s:17; --o:0.1s; left:600px; --rot:-8deg"><img src="assets/chat-phone.jpg" alt=""></div>
+    <div class="phone fromup" style="--s:17; --o:0.35s; left:1000px; --rot:8deg"><img src="assets/feed-phone.jpg" alt=""></div>
+  </section>
+
+  <!-- H · 20–23 · Organisations -->
+  <section class="scene" style="--s:20; --d:3">
+    <div class="caption"><h2 class="slam" data-split="words" data-base="0.05" data-step="0.09" style="--s:20"></h2></div>
+    <div class="screen fromside" style="--s:20; --o:0.1s; --dx:0px; --rot:0deg; top:330px; width:1000px; margin-left:-500px"><img src="assets/org-roles.jpg" alt=""></div>
+  </section>
+
+  <!-- I · 23–27 · Flight -->
+  <section class="scene" style="--s:23; --d:4">
+    <div class="caption"><h2 class="slam" data-split="words" data-base="0.0" data-step="0.12" style="--s:23"></h2></div>
+    <svg class="trail" viewBox="0 0 1920 1080"><path d="M -120 930 C 520 770, 1240 1010, 2040 640" pathLength="1" style="--s:23; --o:0.2s"/></svg>
+    <div class="plane" style="--s:23; --o:0.2s"><svg viewBox="0 0 64 64"><path d="M14 30.5 50 16l-9.5 34-8.2-12.4-8.6-5.6z"/></svg></div>
+    <p class="headline slam" data-split="words" data-base="2.8" data-step="0.12" style="--s:23; position:absolute; top:690px; left:0; right:0"></p>
+  </section>
+
+  <!-- J · 27–30 · Close -->
+  <section class="scene" style="--s:27; --d:3">
+    <div class="mark pop" style="--s:27; --o:0.05s"><svg viewBox="0 0 64 64"><path d="M14 30.5 50 16l-9.5 34-8.2-12.4-8.6-5.6z"/></svg></div>
+    <p class="wordmark" data-split="letters" data-base="0.25" data-step="0.05" style="--s:27"></p>
+    <div class="underline" style="--s:27; --o:1.0s"></div>
+    <p class="kicker fade" style="--s:27; --o:1.4s; margin-top:30px">Apply once. Fly with anyone.</p>
+  </section>
+
+  <div class="progress"></div>
+  <div class="metro"></div>
 </div>
 <script>
-// Renderer hook: render.js calls window.__seek(seconds) to draw an exact frame.
+// Split text into letters or words, each with its own delayed slam.
+// data-base is the first offset, data-step the gap between items (seconds).
+const splitText = (el) => {
+  const base = parseFloat(el.dataset.base || '0');
+  const step = parseFloat(el.dataset.step || '0.05');
+  const mode = el.dataset.split;
+  const text = el.dataset.text || el.textContent || '';
+  el.textContent = '';
+  const parts = mode === 'letters' ? [...text] : text.split(' ');
+  parts.forEach((part, i) => {
+    const span = document.createElement('span');
+    span.className = (mode === 'letters' ? 'ch' : 'wd') + ' slam';
+    span.textContent = mode === 'letters' ? part : part;
+    span.style.setProperty('--o', `${(base + i * step).toFixed(3)}s`);
+    span.style.setProperty('--s', getComputedStyle(el).getPropertyValue('--s') || '0');
+    span.style.animationDelay = `calc((var(--s) + var(--o)) * 1s)`;
+    el.appendChild(span);
+    if (mode === 'words' && i < parts.length - 1) el.appendChild(document.createTextNode(' '));
+  });
+};
+// Text for each split element. Defined here so the markup stays readable.
+const TEXT = {
+  'A-wordmark': 'Jumpseat',
+  'B-1': 'Roblox aviation,',
+  'B-2': 'in one place.',
+  'D': 'Trust, shown plainly.',
+  'E': 'Links ask first.',
+  'F': 'Presence at a glance.',
+  'G': 'Everywhere you crew.',
+  'H': 'Organisations, run by their crews.',
+  'I-1': 'Apply once.',
+  'I-2': 'Fly with anyone.',
+  'J': 'Jumpseat',
+};
+const splitEls = [...document.querySelectorAll('[data-split]')];
+const order = ['A-wordmark', 'B-1', 'B-2', 'D', 'E', 'F', 'G', 'H', 'I-1', 'I-2', 'J'];
+const keyFor = (el) => {
+  const scene = el.closest('.scene').style.getPropertyValue('--s');
+  if (el.classList.contains('wordmark') && scene === '0') return 'A-wordmark';
+  if (el.classList.contains('wordmark')) return 'J';
+  if (el.classList.contains('headline') && el.classList.contains('dim')) return 'B-2';
+  if (el.classList.contains('headline') && scene === '2') return 'B-1';
+  if (el.classList.contains('headline') && scene === '23') return scene === '23' ? 'I-2' : '';
+  if (scene === '8') return 'D';
+  if (scene === '11') return 'E';
+  if (scene === '14') return 'F';
+  if (scene === '17') return 'G';
+  if (scene === '20') return 'H';
+  if (scene === '23') return 'I-1';
+  return '';
+};
+for (const el of splitEls) {
+  el.dataset.text = TEXT[keyFor(el)] || '';
+  splitText(el);
+}
+
 window.__ready = document.fonts.ready.then(() => Promise.all([...document.images].map((i) => i.decode().catch(() => null))));
+// render.js calls __seek(seconds) to draw an exact frame.
 window.__seek = (seconds) => {
   for (const a of document.getAnimations()) {
     a.pause();
     a.currentTime = seconds * 1000;
   }
 };
-window.FILM_DURATION = 60;
+window.FILM_DURATION = 30;
 </script>
 </body>
 </html>
