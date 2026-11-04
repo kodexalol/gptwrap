@@ -1012,3 +1012,20 @@ body.in-thread .thread-foot { position: static; flex: none; margin: 0 -24px; pad
 }
 /* The pill was capped at 90% of the small circle; let it size to its content. */
 .ios-hero .ios-pill { max-width: none; }
+
+/* Header circle at half its previous size, with a solid pill instead of glass. */
+.ios-hero { margin: 4px auto 18px; }
+.ios-hero .avatar.lg { width: 44px; height: 44px; font-size: 17px; }
+.ios-hero .status-ring { padding: 2px; border-width: 2px; }
+.ios-hero .ios-pill {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  padding: 4px 12px;
+  bottom: -10px;
+}
+.ios-hero .ios-name { font-size: 14px; }
+/* At the smaller size, drop the pill a little so the initial stays visible. */
+.ios-hero .ios-pill { bottom: -18px; }
