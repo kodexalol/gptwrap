@@ -1035,3 +1035,5 @@ body.in-thread .thread-foot { position: static; flex: none; margin: 0 -24px; pad
 .ios-hero .ios-name { font-size: 11px; gap: 4px; }
 .ios-hero .ios-pill .badge { width: 13px; height: 13px; margin-left: 0; }
 .ios-hero .ios-pill .badge svg { width: 8px; height: 8px; }
+/* Raise the smaller pill so it overlays the bottom of the circle; the initial stays clear. */
+.ios-hero .ios-pill { bottom: -10px; }
