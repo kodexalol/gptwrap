@@ -179,6 +179,46 @@ async function api(path, options = {}) {
 }
 const send = (method, path, data) => api(path, { method, body: data === undefined ? undefined : JSON.stringify(data) });
 
+// ---------- theme: system by default, or the viewer's light or dark choice (stored in this browser) ----------
+
+const THEME_KEY = 'jumpseat-theme';
+const systemDark = () => matchMedia('(prefers-color-scheme: dark)').matches;
+function themePref() {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return v === 'light' || v === 'dark' ? v : 'system';
+  } catch {
+    return 'system';
+  }
+}
+function isDark() {
+  const pref = themePref();
+  return pref === 'dark' || (pref === 'system' && systemDark());
+}
+function applyTheme(pref) {
+  const root = document.documentElement;
+  if (pref === 'light' || pref === 'dark') root.dataset.theme = pref;
+  else delete root.dataset.theme;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', isDark() ? '#000000' : '#f5f5f7');
+}
+function setTheme(pref) {
+  try {
+    if (pref === 'system') localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, pref);
+  } catch {
+    /* storage blocked: the choice lasts for this page only */
+  }
+  applyTheme(pref);
+}
+
+// Quick switch in the sidebar and on the tab bar's neighbour: flips between light and dark.
+function renderThemeToggle() {
+  const nav = $('#side-nav');
+  nav.querySelector('.theme-quick')?.remove();
+  const dark = isDark();
+  nav.insertAdjacentHTML('beforeend', `<button class="side-link theme-quick" data-action="theme-toggle" type="button">${icon(dark ? 'sun' : 'moon', { size: 22 })}<span>${dark ? 'Light mode' : 'Dark mode'}</span></button>`);
+}
+
 let toastTimer;
 function toast(message) {
   const el = $('#toast');
@@ -191,6 +231,8 @@ function toast(message) {
 // ---------- icons (stroke-based, inherit currentColor) ----------
 
 const ICONS = {
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   feed: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
@@ -1353,6 +1395,12 @@ function renderMe() {
       </div>
     </section>
 
+    <div class="section-head"><h2>Appearance</h2></div>
+    <section class="surface">
+      <p class="muted small" style="margin-bottom:12px">Follow your system, or pick light or dark. Stored in this browser.</p>
+      ${seg('theme', [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], themePref())}
+    </section>
+
     <div class="section-head"><h2>Account</h2></div>
     ${confirmCard()}
     <section class="surface badge-key">
@@ -1564,6 +1612,7 @@ function renderRoute() {
   window.scrollTo(0, 0);
   renderChrome();
   renderRail();
+  renderThemeToggle();
   for (const [pattern, handler] of routes) {
     const match = hash.match(pattern);
     if (match) return handler(match);
@@ -1592,6 +1641,11 @@ app.addEventListener('click', async (e) => {
     else if (tab.dataset.scope === 'admin') {
       adminTab = value;
       renderAdmin();
+      return;
+    } else if (tab.dataset.scope === 'theme') {
+      setTheme(value);
+      renderMe();
+      renderThemeToggle();
       return;
     } else if (tab.dataset.scope === 'jobs') return; // handled by the jobs filter listener
     route();
@@ -1658,6 +1712,10 @@ app.addEventListener('click', async (e) => {
       me.linkAllowlist = await send('DELETE', '/api/me/link-allowlist', { scope: btn.dataset.scope, value: btn.dataset.value });
       toast('Removed');
       renderMe();
+    } else if (action === 'theme-toggle') {
+      setTheme(isDark() ? 'light' : 'dark');
+      renderChrome();
+      renderThemeToggle();
     } else if (action === 'copy-code') {
       await navigator.clipboard.writeText(btn.dataset.code);
       toast('Code copied');
@@ -1719,6 +1777,8 @@ app.addEventListener('click', async (e) => {
 
 // Start the router last, after every view and handler is defined.
 window.addEventListener('hashchange', route);
+applyTheme(themePref());
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(themePref()));
 Promise.all([loadMe(), loadMeta()]).then(() => {
   route();
   refreshUnread();

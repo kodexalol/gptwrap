@@ -180,3 +180,7 @@ ffmpeg -i <work>/film-silent.mp4 -i <work>/launch-track.wav -map 0:v -map 1:a -c
 ```
 
 Film v3 builds the product UI from the app's own markup and `public/styles.css` (scaled up, so it stays crisp and every interaction animates). Only the two phone shots in `launch/assets/` are images. `launch/music.js` now writes a stereo track with reverb and a kick-driven sidechain pump, plus sound effects cued to on-screen actions (typing, button presses, the heart, the popup, the badges). The cue times in `music.js` match `film.html`, so change them together.
+
+## Light and dark themes
+
+Jumpseat follows the system theme by default. Profile → Appearance lets a viewer pick light or dark, and the sidebar has a quick switch. The choice is stored in that browser only (`localStorage`, key `jumpseat-theme`), and an inline script applies it before the first paint. Colours come from design tokens in `public/styles.css`, with a light set and a dark set. The launch film is pinned to dark.

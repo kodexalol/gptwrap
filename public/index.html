@@ -3,8 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#000000">
+  <script>
+    // Apply a saved light or dark choice before the first paint, so there is no flash.
+    try {
+      var savedTheme = localStorage.getItem('jumpseat-theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
+    } catch (e) { /* storage blocked: follow the system */ }
+  </script>
   <meta name="description" content="Jumpseat: the social and job platform for Roblox aviation. Follow airlines, discover crews, apply once.">
   <title>Jumpseat · Roblox aviation</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
