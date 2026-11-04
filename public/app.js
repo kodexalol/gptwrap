@@ -858,12 +858,13 @@ function appendMessages(messages, animate) {
   if (!box) return;
   const fresh = messages.filter((m) => !renderedMessageIds.has(m.id));
   if (!fresh.length) return;
-  const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 240;
+  const list = $('#messages');
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 240;
   box.querySelector('.empty')?.remove();
   box.insertAdjacentHTML('beforeend', fresh.map((m) => bubbleHtml(m, animate)).join(''));
   fresh.forEach((m) => renderedMessageIds.add(m.id));
   if (nearBottom || fresh.some((m) => m.mine)) {
-    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: animate && !REDUCED_MOTION.matches ? 'smooth' : 'auto' });
+    scrollThread(animate && !REDUCED_MOTION.matches);
   }
 }
 
@@ -996,10 +997,16 @@ async function loadThread(id, initial) {
   if (initial) {
     $('#messages').innerHTML = t.messages.length ? '' : '<p class="empty">Say hello.</p>';
     appendMessages(t.messages, false);
-    window.scrollTo({ top: document.documentElement.scrollHeight });
+    scrollThread(false);
   } else {
     appendMessages(t.messages, true);
   }
+}
+
+// The messages box is the scroll container in a thread, so it is the one to scroll.
+function scrollThread(smooth) {
+  const list = $('#messages');
+  if (list) list.scrollTo({ top: list.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
 }
 
 function stopThreadPoll() {

@@ -966,3 +966,49 @@ a.row:hover .row-title { text-decoration: underline; text-underline-offset: 3px;
 .ios-dot.online { background: var(--ok); }
 .ios-hero .ios-name { flex-wrap: nowrap; white-space: nowrap; }
 .ios-hero .ios-pill { bottom: 0; }
+
+/* Smaller header circle, with a thinner ring. The pill overhangs the bottom edge so the initial stays clear. */
+.ios-hero { margin: 6px auto 26px; }
+.ios-hero .avatar.lg { width: 88px; height: 88px; font-size: 34px; }
+.ios-hero .status-ring { padding: 3px; border-width: 3px; }
+.ios-hero .ios-pill { bottom: -12px; }
+/* The pill is absolutely positioned inside a narrow circle; size it to its content so the badge stays inside. */
+.ios-hero .ios-pill { width: max-content; }
+
+/* ---------- thread layout: no separators, composer on the bottom edge, messages scroll above ---------- */
+body.in-thread #app { height: 100vh; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+body.in-thread .main { padding-bottom: 0; }
+body.in-thread .page-head { border-bottom: 0; flex: none; }
+body.in-thread #thread-head { border-bottom: 0; flex: none; }
+body.in-thread #messages { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 4px 18px; }
+body.in-thread .thread-foot { position: static; flex: none; margin: 0 -24px; padding: 10px 24px 18px; border-top: 0; background: var(--bar); -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%); }
+@media (max-width: 760px) {
+  body.in-thread #app { padding: 0 16px; }
+  body.in-thread .thread-foot { margin: 0 -16px; padding: 10px 16px calc(14px + env(safe-area-inset-bottom)); }
+}
+
+/* ---------- motion in the thread ---------- */
+/* Sent bubbles arrive from the composer side; received ones from the other side. */
+.bubble-row.mine.new { animation: bubble-from-right 0.34s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
+.bubble-row:not(.mine).new { animation: bubble-from-left 0.34s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
+@keyframes bubble-from-right { from { opacity: 0; transform: translate(14px, 10px) scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes bubble-from-left { from { opacity: 0; transform: translate(-14px, 10px) scale(0.96); } to { opacity: 1; transform: none; } }
+
+/* The composer lifts a little when focused, and the send button presses. */
+.thread-compose textarea { transition: box-shadow 0.2s ease, border-color 0.2s ease, height 0.15s ease; }
+.thread-compose .btn { transition: transform 0.12s ease, background 0.15s ease; }
+.thread-compose .btn:active { transform: scale(0.88); }
+.thread-compose .btn:not(:disabled):hover { transform: scale(1.04); }
+
+/* A soft pulse on the online ring, so presence reads at a glance. */
+.ios-hero .status-ring.online { animation: ring-pulse 2.4s ease-out infinite; }
+@keyframes ring-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(48, 209, 88, 0.45); }
+  70% { box-shadow: 0 0 0 10px rgba(48, 209, 88, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(48, 209, 88, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ios-hero .status-ring.online, .bubble-row.new { animation: none !important; }
+}
+/* The pill was capped at 90% of the small circle; let it size to its content. */
+.ios-hero .ios-pill { max-width: none; }
