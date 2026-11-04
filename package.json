@@ -1,0 +1,17 @@
+{
+  "name": "jumpseat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Verified job board for Roblox airlines",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
