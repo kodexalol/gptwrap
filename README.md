@@ -177,3 +177,5 @@ node launch/music.js <work>/launch-track.wav
 node launch/render.js <work>/render <work>/film-silent.mp4
 ffmpeg -i <work>/film-silent.mp4 -i <work>/launch-track.wav -map 0:v -map 1:a -c:v copy -c:a aac -shortest out.mp4
 ```
+
+Film v3 builds the product UI from the app's own markup and `public/styles.css` (scaled up, so it stays crisp and every interaction animates). Only the two phone shots in `launch/assets/` are images. `launch/music.js` now writes a stereo track with reverb and a kick-driven sidechain pump, plus sound effects cued to on-screen actions (typing, button presses, the heart, the popup, the badges). The cue times in `music.js` match `film.html`, so change them together.
