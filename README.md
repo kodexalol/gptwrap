@@ -6,7 +6,8 @@ Jumpseat is an independent fan project. It is not affiliated with or endorsed by
 
 ## What's in it
 
-- **Home feed.** Posts from the airlines and people you follow, plus a popular feed for everyone else.
+- **Home.** A dashboard: the setup checklist for new members, open roles, organisations, popular posts, and trending tags.
+- **Feed.** Posts from the organisations and people you follow, plus a popular feed for everyone else.
 - **Posts.** Text up to 500 characters, `#hashtags`, one media item (image, video, or YouTube/Vimeo link), likes, comments, and reports.
 - **Direct messages.** Message requests, one-message-until-accepted, blocking, declining, and reporting. Thread view updates every 3 seconds.
 - **Video.** Post a direct `.mp4` or `.webm` link, or a YouTube or Vimeo link. Embeds use privacy-enhanced hosts (youtube-nocookie.com). Jumpseat does not host or upload video.
@@ -43,14 +44,30 @@ Copy `.env.example` to `.env`, or export the variables in your shell.
 
 Register the redirect URI in your Open Cloud OAuth app exactly as configured here.
 
-## Accounts and verification
+## Accounts, confirmation and badges
 
-1. **Sign in with Roblox.** A Roblox sign-in creates your Jumpseat account. The username comes from Roblox. Sessions are random tokens stored as hashes in an HttpOnly cookie.
-2. **List an airline** at `#/claim` with its Roblox group ID. Anyone signed in can list up to three airlines.
-3. **Verify it.** Click "Verify with Roblox" on the airline page. The server signs you in with Roblox and checks that your Roblox user ID matches the owner of the group. If it does, the airline is verified and you become its owner.
-4. **Owners** post as the airline, post and close roles, and edit the description and Discord settings from the airline page.
+1. **Sign in** with Discord (or Roblox, if configured). Sessions are random tokens stored as hashes in an HttpOnly cookie.
+2. **Confirm your Roblox account** (the green house). Enter your Roblox username, and Jumpseat gives you a one-time code like `JS-7K2M9Q`. Paste it into the About section of your Roblox profile, save, and press Check. The server reads your public Roblox profile and confirms the link. A Roblox account can only be confirmed on one Jumpseat account. Codes expire after 24 hours.
+3. **Set up an organisation** (airline, Roblox store, or other). This needs a confirmed account, and the server refuses it otherwise (`confirm_required`). Anyone confirmed can set up up to three.
+4. **Verify the organisation** (the blue check). Sign in with Roblox as the account that owns the group. The server checks that you are confirmed, that you are the group owner, and that the Roblox account matches your confirmed one.
+5. **Owners** post as the organisation, post and close roles, and edit settings from its page.
 
-Unverified airlines are visible but marked as unverified. Their roles are hidden from public listings and can't receive applications.
+Badges:
+
+| Badge | Meaning | Who gets it |
+| --- | --- | --- |
+| Green house | Confirmed account | Anyone who finishes the Roblox code check |
+| Gold clover check | Jumpseat verified member | Granted by an admin |
+| Red tools | Admin | Usernames listed in `ADMIN_USERNAMES` |
+| Blue check | Verified organisation | Group owner has verified the organisation |
+
+Unverified organisations are visible but marked as unverified. Their roles are hidden from public listings and can't receive applications.
+
+## Admin tools
+
+Set `ADMIN_USERNAMES` to a comma-separated list. Admins see **Admin tools** on their profile. They can review reported posts (restore or remove them), see conversation reports (reason and reporter only, never message content), and grant or remove the gold check.
+
+Admin status is set in configuration, not in the UI, so there is no way to make yourself an admin from the site.
 
 ## API
 
@@ -58,7 +75,15 @@ All routes are under `/api` and return JSON. Writes need a signed-in session.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/api/me` | Current user, owned airlines, or `null` |
+| GET | `/api/me` | Current user, organisations, pending confirmation, admin flag |
+| POST | `/api/me/roblox/start` | `{ username }`. Returns a one-time code to put in your Roblox About |
+| POST | `/api/me/roblox/check` | Reads your Roblox About and confirms the account if the code is there |
+| POST | `/api/me/roblox/cancel` | Clears a pending code |
+| GET | `/api/admin/reports` | Admins only. Reported posts and conversation reports |
+| POST | `/api/admin/posts/:id/restore` | Admins only |
+| POST | `/api/admin/posts/:id/remove` | Admins only |
+| GET | `/api/admin/users?q=` | Admins only. Member search |
+| POST | `/api/admin/users/:id/member` | Admins only. `{ verified }` grants or removes the gold check |
 | PATCH | `/api/me` | `{ displayName?, bio? }` |
 | GET | `/api/users/:username` | Profile, follower counts, posts |
 | GET | `/api/feed` | Posts from people and airlines you follow |
@@ -104,6 +129,9 @@ Roles are `pilot`, `cabin-crew`, and `ground`.
 ## Before going live
 
 These are not done yet:
+
+- **Discord setup.** Register the redirect URI `${PUBLIC_URL}/auth/discord/callback`. Discord sign-in is written but hasn't been tested against a live app.
+- **Roblox confirmation.** The code check calls Roblox's public `users.roblox.com` API and has been tested against a real profile (it rejects a missing code). The full success path needs someone to paste a code into a real About section.
 
 - **Confirm the Roblox endpoints.** The OAuth URLs, the `sub` claim, the `preferred_username` field, and the group lookup in `server.js` came from the docs and haven't been tested against a real app. Check them in the Open Cloud reference. If `sub` doesn't match the group owner's user ID, verification will fail for everyone.
 - **Replace the JSON store.** `src/store.js` rewrites one file on every change. Move to SQLite or Postgres before real traffic.

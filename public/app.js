@@ -5,6 +5,7 @@ const app = $('#app');
 
 const ROLE_FILTERS = [['', 'All'], ['pilot', 'Pilots'], ['cabin-crew', 'Cabin crew'], ['ground', 'Ground ops']];
 const ROLE_OPTIONS = { pilot: 'Pilot', 'cabin-crew': 'Cabin crew', ground: 'Ground ops' };
+const KIND_LABELS = { airline: 'Airline', store: 'Roblox store', other: 'Organisation' };
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
 
 // ---------- helpers ----------
@@ -22,6 +23,7 @@ const initial = (name) => esc(String(name || '?').trim().charAt(0).toUpperCase()
 const safeDecode = (value) => {
   try { return decodeURIComponent(value || ''); } catch { return ''; }
 };
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 function timeAgo(iso) {
   const seconds = (Date.now() - Date.parse(iso)) / 1000;
@@ -46,7 +48,11 @@ async function api(path, options = {}) {
     headers: { 'content-type': 'application/json', ...(options.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.code = data.code;
+    throw err;
+  }
   return data;
 }
 const send = (method, path, data) => api(path, { method, body: data === undefined ? undefined : JSON.stringify(data) });
@@ -64,6 +70,7 @@ function toast(message) {
 
 const ICONS = {
   home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  feed: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   jobs: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/>',
   plane: '<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
@@ -83,12 +90,35 @@ const ICONS = {
   shield: '<path d="M12 3 4 6v6c0 4.5 3.4 8.2 8 9 4.6-.8 8-4.5 8-9V6z"/>',
   send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/>',
   block: '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
-  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z"/>',
+  house: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  wrench: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
 };
 const icon = (name, { filled = false, size = 20 } = {}) =>
   `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="${filled ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
-const VERIFIED = '<svg class="verified" viewBox="0 0 24 24" role="img" aria-label="Verified"><circle cx="12" cy="12" r="11" fill="currentColor"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// Blue check: a verified organisation (its Roblox group owner has signed in).
+const VERIFIED = '<svg class="verified" viewBox="0 0 24 24" role="img" aria-label="Verified organisation"><circle cx="12" cy="12" r="11" fill="currentColor"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// Account badges, in order of meaning:
+//  confirmed: green house. The Roblox account is linked with a code in its About section.
+//  member:    gold clover check. Granted by an admin to trusted Jumpseat members.
+//  admin:     red gradient with a tools icon.
+const BADGE_TITLES = {
+  confirmed: 'Confirmed account: Roblox account linked with a code in its About section',
+  member: 'Jumpseat verified member',
+  admin: 'Admin',
+};
+const BADGE_HTML = {
+  confirmed: `<span class="badge b-confirmed" role="img" aria-label="${BADGE_TITLES.confirmed}" title="${BADGE_TITLES.confirmed}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 11.2 12 4.4l8.5 6.8V19a1 1 0 0 1-1 1h-4.6v-5.6h-5.8V20H4.5a1 1 0 0 1-1-1z" fill="#fff"/></svg></span>`,
+  member: `<svg class="badge-clover" viewBox="0 0 24 24" role="img" aria-label="${BADGE_TITLES.member}"><title>${BADGE_TITLES.member}</title><g fill="#f2c14e"><circle cx="8" cy="8" r="4.6"/><circle cx="16" cy="8" r="4.6"/><circle cx="8" cy="16" r="4.6"/><circle cx="16" cy="16" r="4.6"/><circle cx="12" cy="12" r="5.2"/></g><path d="M8.6 12.3l2.2 2.2 3.9-4.1" fill="none" stroke="#5c3d00" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  admin: `<span class="badge b-admin" role="img" aria-label="${BADGE_TITLES.admin}" title="${BADGE_TITLES.admin}"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>`,
+};
+const badgesHtml = (badges = []) => ['confirmed', 'member', 'admin'].filter((b) => badges.includes(b)).map((b) => BADGE_HTML[b]).join('');
+
+// Name, then the blue org check (if any), then the user's badges.
+const nameLine = (name, { badges = [], verified = false } = {}) =>
+  `${esc(name)}${verified ? VERIFIED : ''}${badgesHtml(badges)}`;
 
 // Solid, muted avatar colors. Each name maps to one of these, so avatars stay consistent.
 const AVATAR_COLORS = ['#3b4a63', '#4b3f63', '#3e5c4e', '#5e4b3a', '#3a5561', '#5a3e4c', '#4a5a3a', '#3e4a5e'];
@@ -101,44 +131,47 @@ const avatar = (name, { airline = false, size = '' } = {}) =>
 
 // ---------- state ----------
 
-let me = { user: null, airlines: [] };
+let me = { user: null, airlines: [], isAdmin: false, pendingRoblox: null, devLogin: false };
 let homeTab = 'following';
 let airlineTab = 'posts';
 let airlineTabFor = null;
 let messagesTab = 'inbox';
+let adminTab = 'reports';
 let jobFilter = { role: '', q: '' };
 let unreadTotal = 0;
 let threadPoll = null;
 let renderedMessageIds = new Set();
+let threadStateKey = null;
 
 const NAV = [
   { href: '#/', icon: 'home', label: 'Home', match: /^#\/?$/ },
+  { href: '#/feed', icon: 'feed', label: 'Feed', match: /^#\/feed$/ },
   { href: '#/discover', icon: 'search', label: 'Discover', match: /^#\/discover/ },
   { href: '#/jobs', icon: 'jobs', label: 'Jobs', match: /^#\/(jobs|job\/)/ },
-  { href: '#/airlines', icon: 'plane', label: 'Airlines', match: /^#\/(airlines|airline\/|claim)/ },
+  { href: '#/airlines', icon: 'plane', label: 'Orgs', match: /^#\/(airlines|airline\/|claim)/ },
   { href: '#/messages', icon: 'message', label: 'Messages', match: /^#\/messages/, badge: true },
-  { href: '#/me', icon: 'user', label: 'Profile', match: /^#\/(me|u\/)/ },
+  { href: '#/me', icon: 'user', label: 'Profile', match: /^#\/(me|u\/|admin)/ },
 ];
 
-const badge = (count) => (count > 0 ? `<span class="nav-badge" aria-label="${count} unread">${count > 99 ? '99+' : count}</span>` : '');
+const navBadge = (count) => (count > 0 ? `<span class="nav-badge" aria-label="${count} unread">${count > 99 ? '99+' : count}</span>` : '');
 
 function renderChrome() {
   const hash = location.hash || '#/';
   $('#side-nav').innerHTML = NAV.map((n) =>
-    `<a class="side-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 22 })}<span>${n.label}</span>${n.badge ? badge(unreadTotal) : ''}</a>`).join('');
+    `<a class="side-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 22 })}<span>${n.label}</span>${n.badge ? navBadge(unreadTotal) : ''}</a>`).join('');
   $('#tabbar').innerHTML = NAV.map((n) =>
-    `<a class="tab-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 24 })}<span>${n.label}</span>${n.badge && unreadTotal ? `<span class="tab-dot"></span>` : ''}</a>`).join('');
+    `<a class="tab-link${n.match.test(hash) ? ' active' : ''}" href="${n.href}">${icon(n.icon, { size: 23 })}<span>${n.label}</span>${n.badge && unreadTotal ? '<span class="tab-dot"></span>' : ''}</a>`).join('');
 
   $('#account').innerHTML = me.user
-    ? `<a class="account" href="#/me">${avatar(me.user.displayName)}<span class="account-text"><strong>${esc(me.user.displayName)}</strong><span class="muted">@${esc(me.user.username)}</span></span></a>`
-    : '<a class="btn primary wide" href="/auth/login">Sign in with Roblox</a>';
+    ? `<a class="account" href="#/me">${avatar(me.user.displayName)}<span class="account-text"><strong>${nameLine(me.user.displayName, { badges: me.user.badges })}</strong><span class="muted">@${esc(me.user.username)}</span></span></a>`
+    : '<a class="btn primary wide" href="/auth/login">Sign in</a>';
 }
 
 async function loadMe() {
   try {
     me = await api('/api/me');
   } catch {
-    me = { user: null, airlines: [] };
+    me = { user: null, airlines: [], isAdmin: false, pendingRoblox: null, devLogin: false };
   }
   renderChrome();
 }
@@ -160,12 +193,12 @@ async function renderRail() {
   const rail = $('#rail');
   rail.innerHTML = `
     <section class="surface rail-card"><h3>Trending</h3><div id="rail-tags">${loading}</div></section>
-    <section class="surface rail-card"><h3>Airlines</h3><div id="rail-airlines">${loading}</div></section>
+    <section class="surface rail-card"><h3>Organisations</h3><div id="rail-airlines">${loading}</div></section>
     <p class="fine">Jumpseat is a fan project. It is not affiliated with Roblox Corporation or any airline.</p>`;
   try {
     const [tags, airlines] = await Promise.all([api('/api/tags'), api('/api/airlines')]);
     $('#rail-tags').innerHTML = tags.length
-      ? tags.slice(0, 5).map((t) => `<a class="tag-row" href="#/tag/${esc(t.tag)}"><span>#${esc(t.tag)}</span><span class="muted">${t.count} post${t.count === 1 ? '' : 's'}</span></a>`).join('')
+      ? tags.slice(0, 5).map((t) => `<a class="tag-row" href="#/tag/${esc(t.tag)}"><span>#${esc(t.tag)}</span><span class="muted">${plural(t.count, 'post')}</span></a>`).join('')
       : '<p class="muted">No tags yet.</p>';
     $('#rail-airlines').innerHTML = airlines.length
       ? airlines.slice(0, 4).map((a) => `
@@ -173,10 +206,10 @@ async function renderRail() {
             ${avatar(a.name, { airline: true, size: 'sm' })}
             <span class="rail-airline-text">
               <strong>${esc(a.name)}${a.verified ? VERIFIED : ''}</strong>
-              <span class="muted">${a.followers} follower${a.followers === 1 ? '' : 's'}</span>
+              <span class="muted">${esc(a.kindLabel)} · ${plural(a.followers, 'follower')}</span>
             </span>
           </a>`).join('')
-      : '<p class="muted">No airlines yet.</p>';
+      : '<p class="muted">No organisations yet.</p>';
   } catch {
     $('#rail-tags').innerHTML = '';
     $('#rail-airlines').innerHTML = '';
@@ -200,33 +233,30 @@ function embed(src, title) {
   return `<div class="embed"><iframe src="${esc(src)}" title="${esc(title)}" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>`;
 }
 
-// Images, uploaded-by-link video files, and YouTube or Vimeo embeds. Only one media type per post.
+// Images, linked video files, and YouTube or Vimeo embeds. Only one media type per post.
 function mediaHtml(p) {
   if (p.video?.kind === 'file') {
     return `<video class="post-media" src="${esc(p.video.src)}" controls playsinline preload="metadata" referrerpolicy="no-referrer"></video>`;
   }
-  if (p.video?.kind === 'youtube') {
-    return embed(`https://www.youtube-nocookie.com/embed/${encodeURIComponent(p.video.id)}`, 'YouTube video');
-  }
-  if (p.video?.kind === 'vimeo') {
-    return embed(`https://player.vimeo.com/video/${encodeURIComponent(p.video.id)}`, 'Vimeo video');
-  }
-  if (p.imageUrl) {
-    return `<img class="post-img" src="${esc(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
-  }
+  if (p.video?.kind === 'youtube') return embed(`https://www.youtube-nocookie.com/embed/${encodeURIComponent(p.video.id)}`, 'YouTube video');
+  if (p.video?.kind === 'vimeo') return embed(`https://player.vimeo.com/video/${encodeURIComponent(p.video.id)}`, 'Vimeo video');
+  if (p.imageUrl) return `<img class="post-img" src="${esc(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
   return '';
 }
 
 function postCard(p) {
-  const isAirline = p.author.type === 'airline';
-  const href = isAirline ? `#/airline/${esc(p.author.slug)}` : `#/u/${esc(p.author.username)}`;
-  const handle = isAirline ? 'Airline' : `@${p.author.username}`;
+  const isOrg = p.author.type === 'airline';
+  const href = isOrg ? `#/airline/${esc(p.author.slug)}` : `#/u/${esc(p.author.username)}`;
+  const handle = isOrg ? `${KIND_LABELS[p.author.kind] || 'Organisation'}` : `@${p.author.username}`;
+  const name = isOrg
+    ? nameLine(p.author.name, { verified: p.author.verified })
+    : nameLine(p.author.name, { badges: p.author.badges });
   return `
     <article class="post" data-post="${esc(p.id)}">
-      <a class="post-avatar" href="${href}" tabindex="-1">${avatar(p.author.name, { airline: isAirline })}</a>
+      <a class="post-avatar" href="${href}" tabindex="-1">${avatar(p.author.name, { airline: isOrg })}</a>
       <div class="post-main">
         <header class="post-head">
-          <a class="post-name" href="${href}">${esc(p.author.name)}</a>${p.author.verified ? VERIFIED : ''}
+          <a class="post-name" href="${href}">${name}</a>
           <span class="post-handle">${esc(handle)} · ${timeAgo(p.createdAt)}</span>
           ${p.canDelete ? `<button class="icon-btn quiet" data-action="delete" data-id="${esc(p.id)}" aria-label="Delete post">${icon('trash', { size: 16 })}</button>` : ''}
         </header>
@@ -247,21 +277,31 @@ function jobRow(job) {
       ${avatar(job.airline?.name || '?', { airline: true })}
       <div class="row-main">
         <div class="row-title">${esc(job.title)}</div>
-        <div class="row-sub">${esc(job.airline?.name || 'Unknown airline')}${job.airline?.verified ? VERIFIED : ''}</div>
+        <div class="row-sub">${esc(job.airline?.name || 'Unknown organisation')}${job.airline?.verified ? VERIFIED : ''}</div>
       </div>
       <div class="row-end"><span class="pill">${esc(job.roleLabel)}</span><span>${timeAgo(job.createdAt)}</span></div>
     </a>`;
 }
 
-function airlineRow(a) {
+function orgRow(a) {
   return `
     <a class="row" href="#/airline/${esc(a.slug)}">
       ${avatar(a.name, { airline: true })}
       <div class="row-main">
-        <div class="row-title">${esc(a.name)}${a.verified ? VERIFIED : ''}</div>
+        <div class="row-title">${esc(a.name)}${a.verified ? VERIFIED : ''}<span class="kind">${esc(a.kindLabel)}</span></div>
         <div class="row-sub clamp">${esc(a.description || 'No description yet.')}</div>
       </div>
-      <div class="row-end"><span>${a.followers} follower${a.followers === 1 ? '' : 's'}</span></div>
+      <div class="row-end"><span>${plural(a.followers, 'follower')}</span></div>
+    </a>`;
+}
+
+function orgCard(a) {
+  return `
+    <a class="card surface" href="#/airline/${esc(a.slug)}">
+      <div class="org-top">${avatar(a.name, { airline: true })}<span class="kind">${esc(a.kindLabel)}</span></div>
+      <h3 class="org-name">${esc(a.name)}${a.verified ? VERIFIED : ''}</h3>
+      <p class="muted clamp">${esc(a.description || 'No description yet.')}</p>
+      <p class="small muted" style="margin-top:10px">${plural(a.followers, 'follower')}</p>
     </a>`;
 }
 
@@ -270,7 +310,7 @@ function userRow(u) {
     <a class="row" href="#/u/${esc(u.username)}">
       ${avatar(u.displayName)}
       <div class="row-main">
-        <div class="row-title">${esc(u.displayName)}</div>
+        <div class="row-title">${nameLine(u.displayName, { badges: u.badges })}</div>
         <div class="row-sub">@${esc(u.username)}</div>
       </div>
     </a>`;
@@ -282,7 +322,7 @@ function commentItem(c) {
       ${avatar(c.author.name, { size: 'sm' })}
       <div>
         <div class="post-head">
-          <strong>${esc(c.author.name)}</strong><span class="post-handle">@${esc(c.author.username)} · ${timeAgo(c.createdAt)}</span>
+          <strong>${nameLine(c.author.name, { badges: c.author.badges })}</strong><span class="post-handle">@${esc(c.author.username)} · ${timeAgo(c.createdAt)}</span>
           ${c.mine ? `<button class="icon-btn quiet" data-action="delete-comment" data-id="${esc(c.id)}" aria-label="Delete comment">${icon('trash', { size: 16 })}</button>` : ''}
         </div>
         <p>${linkify(c.body)}</p>
@@ -290,12 +330,12 @@ function commentItem(c) {
     </div>`;
 }
 
-function composer(defaultAirlineSlug = null) {
+function composer(defaultOrgSlug = null) {
   if (!me.user) return '';
   const owned = me.airlines.filter((a) => a.owner);
   const options = [
     `<option value="">Post as @${esc(me.user.username)}</option>`,
-    ...owned.map((a) => `<option value="${esc(a.slug)}"${a.slug === defaultAirlineSlug ? ' selected' : ''}>Post as ${esc(a.name)}</option>`),
+    ...owned.map((a) => `<option value="${esc(a.slug)}"${a.slug === defaultOrgSlug ? ' selected' : ''}>Post as ${esc(a.name)}</option>`),
   ].join('');
   return `
     <form class="composer" data-form="composer">
@@ -318,7 +358,7 @@ function signInPrompt(headline, text) {
       <p class="kicker">Jumpseat</p>
       <h1 class="display">${esc(headline)}</h1>
       <p class="lede">${esc(text)}</p>
-      <div class="cta"><a class="btn primary" href="/auth/login">Sign in with Roblox</a></div>
+      <div class="cta"><a class="btn primary" href="/auth/login">Sign in</a></div>
     </section>`;
 }
 
@@ -357,7 +397,118 @@ function bindComposer() {
   });
 }
 
-// ---------- views: home ----------
+// ---------- views: home (dashboard) ----------
+
+async function renderHome() {
+  const guest = !me.user;
+  app.innerHTML = `
+    ${pageHead('Home')}
+    <section class="home-hero">
+      <p class="kicker">${guest ? 'Roblox aviation, in one place' : `Welcome back, ${esc(me.user.displayName)}`}</p>
+      <h1 class="display">${guest ? 'Your airline community, in one feed.' : 'Fly, hire and get hired.'}</h1>
+      <p class="lede">${guest
+        ? 'Follow the airlines and Roblox stores you care about, see what crews post, and apply to open roles without leaving the sky.'
+        : 'Your dashboard for organisations, roles and the crew around you.'}</p>
+      <div class="cta">
+        ${guest
+          ? '<a class="btn primary" href="/auth/login">Sign in</a><a class="btn secondary" href="#/discover">Explore</a>'
+          : '<a class="btn primary" href="#/feed">Open your feed</a><a class="btn secondary" href="#/jobs">Browse roles</a>'}
+      </div>
+    </section>
+    ${guest ? '' : checklistCard()}
+    <div id="home-stats" class="stat-strip">${loading}</div>
+    <div class="section-head"><h2>Open roles</h2><a class="small" href="#/jobs">See all</a></div>
+    <div id="home-jobs" class="list">${loading}</div>
+    <div class="section-head"><h2>Organisations</h2><a class="small" href="#/airlines">See all</a></div>
+    <div id="home-orgs" class="org-grid">${loading}</div>
+    <div class="section-head"><h2>Popular right now</h2><a class="small" href="#/feed">Open feed</a></div>
+    <div id="home-posts" class="feed">${loading}</div>
+    <div class="section-head"><h2>Trending</h2></div>
+    <div id="home-tags" class="tag-cloud">${loading}</div>
+    ${guest ? `<section class="features">
+      ${feature('plane', 'Follow organisations', 'Posts, hiring news and route updates from airlines and Roblox stores.')}
+      ${feature('jobs', 'Apply once', 'One application goes straight to the organisation’s Discord.')}
+      ${feature('shield', 'Confirmed and verified', 'Accounts confirm their Roblox link. Organisations prove they own their group.')}
+    </section>` : ''}`;
+
+  try {
+    const [orgs, jobs, posts, tags] = await Promise.all([
+      api('/api/airlines'),
+      api('/api/jobs'),
+      api('/api/posts?sort=top'),
+      api('/api/tags'),
+    ]);
+    const verified = orgs.filter((o) => o.verified);
+    $('#home-stats').innerHTML = [
+      statTile(verified.length, 'verified organisations'),
+      statTile(jobs.length, 'open roles'),
+      statTile(posts.length, 'posts this week'),
+    ].join('');
+    $('#home-jobs').innerHTML = jobs.length ? jobs.slice(0, 4).map(jobRow).join('') : '<p class="empty">No open roles yet.</p>';
+    $('#home-orgs').innerHTML = verified.length
+      ? verified.slice(0, 3).map(orgCard).join('')
+      : '<p class="empty">No verified organisations yet.</p>';
+    $('#home-posts').innerHTML = posts.length ? posts.slice(0, 2).map(postCard).join('') : '<p class="empty">No posts yet.</p>';
+    $('#home-tags').innerHTML = tags.length
+      ? tags.slice(0, 8).map((t) => `<a class="chip" href="#/tag/${esc(t.tag)}">#${esc(t.tag)} <span class="muted">${t.count}</span></a>`).join('')
+      : '<p class="muted">No tags yet.</p>';
+  } catch (err) {
+    $('#home-stats').innerHTML = errorBox(err.message);
+  }
+}
+
+function feature(iconName, title, text) {
+  return `<div class="feature"><span class="feature-ic">${icon(iconName, { size: 20 })}</span><h3>${esc(title)}</h3><p>${esc(text)}</p></div>`;
+}
+
+function statTile(value, label) {
+  return `<div class="stat"><strong>${value}</strong><span class="muted">${esc(label)}</span></div>`;
+}
+
+// For signed-in users: the steps to get set up, with the confirmation step first.
+function checklistCard() {
+  const confirmed = Boolean(me.user.confirmed);
+  const hasOrg = me.airlines.length > 0;
+  const followed = me.following > 0;
+  const steps = [
+    { done: true, title: 'Sign in', text: 'You are signed in.' },
+    {
+      done: confirmed,
+      title: 'Confirm your Roblox account',
+      text: confirmed ? 'Confirmed. The green house shows on your profile.' : 'Paste a short code into your Roblox About to confirm the account. Needed before you can set up an organisation.',
+      href: confirmed ? null : '#/me',
+      cta: 'Confirm',
+    },
+    {
+      done: hasOrg,
+      title: 'Set up your organisation',
+      text: hasOrg ? `You have ${plural(me.airlines.length, 'organisation')}.` : 'Airline, Roblox store or another group. Needs a confirmed account.',
+      href: hasOrg ? null : '#/claim',
+      cta: 'Set up',
+      locked: !confirmed,
+    },
+    { done: followed, title: 'Follow an organisation', text: followed ? 'Your feed is set up.' : 'Follow a few to fill your feed.', href: followed ? null : '#/airlines', cta: 'Browse' },
+  ];
+  const doneCount = steps.filter((s) => s.done).length;
+  if (doneCount === steps.length) return '';
+  return `
+    <section class="surface checklist">
+      <div class="section-head" style="padding-top:0"><h2>Get set up</h2><span class="muted small">${doneCount} of ${steps.length} done</span></div>
+      <ol class="steps">
+        ${steps.map((s) => `
+          <li class="step${s.done ? ' done' : ''}">
+            <span class="step-mark">${s.done ? icon('check', { size: 16 }) : ''}</span>
+            <div class="step-text">
+              <strong>${esc(s.title)}${s.title.startsWith('Confirm') ? ` ${BADGE_HTML.confirmed}` : ''}</strong>
+              <span class="muted small">${esc(s.text)}</span>
+            </div>
+            ${s.href && !s.done ? `<a class="btn ${s.locked ? 'secondary' : 'primary'} small" href="${s.href}">${s.cta}</a>` : ''}
+          </li>`).join('')}
+      </ol>
+    </section>`;
+}
+
+// ---------- views: feed ----------
 
 async function loadFeed() {
   const feed = $('#feed');
@@ -366,7 +517,7 @@ async function loadFeed() {
     let notice = '';
     if (me.user && homeTab === 'following' && !posts.length) {
       posts = await api('/api/posts?sort=top');
-      notice = '<div class="surface notice">You are not following anyone yet. Follow airlines or crew in Discover and their posts will land here. Popular posts are shown for now.</div>';
+      notice = '<div class="surface notice">You are not following anyone yet. Follow organisations or crew in Discover and their posts will land here. Popular posts are shown for now.</div>';
     }
     feed.innerHTML = notice + (posts.length ? posts.map(postCard).join('') : '<p class="empty">No posts yet. Be the first to post.</p>');
   } catch (err) {
@@ -374,34 +525,14 @@ async function loadFeed() {
   }
 }
 
-function renderHome() {
-  const welcome = me.user ? '' : `
-    <section class="welcome">
-      <p class="kicker">Roblox aviation, in one place</p>
-      <h1 class="display">Your airline community, in one feed.</h1>
-      <p class="lede">Follow the airlines you fly with, see what crews are posting, and apply to open roles without leaving the sky.</p>
-      <div class="cta">
-        <a class="btn primary" href="/auth/login">Sign in with Roblox</a>
-        <a class="btn secondary" href="#/discover">Explore airlines</a>
-      </div>
-    </section>
-    <section class="features">
-      ${feature('plane', 'Follow airlines', 'Posts, hiring news and route updates from the carriers you like.')}
-      ${feature('jobs', 'Apply once', 'One application goes straight to the airline’s Discord.')}
-      ${feature('check', 'Verified owners', 'Airlines prove they own their Roblox group before posting roles.')}
-    </section>`;
-
-  const feedHead = me.user
-    ? `<div class="toolbar">${seg('home', [['following', 'Following'], ['explore', 'Explore']], homeTab)}</div>`
-    : '<div class="section-head"><h2>Popular right now</h2></div>';
-
-  app.innerHTML = `${pageHead('Home')}${welcome}${composer()}${feedHead}<div id="feed" class="feed">${loading}</div>`;
+function renderFeed() {
+  app.innerHTML = `
+    ${pageHead('Feed')}
+    ${me.user ? composer() : `<section class="surface notice">Sign in to post and follow. <a class="tag-link" href="/auth/login">Sign in</a></section>`}
+    <div class="toolbar">${seg('home', me.user ? [['following', 'Following'], ['explore', 'Explore']] : [['explore', 'Popular']], me.user ? homeTab : 'explore')}</div>
+    <div id="feed" class="feed">${loading}</div>`;
   bindComposer();
   loadFeed();
-}
-
-function feature(iconName, title, text) {
-  return `<div class="feature"><span class="feature-ic">${icon(iconName, { size: 20 })}</span><h3>${esc(title)}</h3><p>${esc(text)}</p></div>`;
 }
 
 // ---------- views: discover, tags ----------
@@ -411,7 +542,7 @@ function renderDiscover(q = '') {
     ${pageHead('Discover')}
     <form id="search-form" class="search" role="search">
       ${icon('search', { size: 18 })}
-      <input id="q" type="search" placeholder="Search airlines, people, posts, roles or #tags" value="${esc(q)}" aria-label="Search">
+      <input id="q" type="search" placeholder="Search organisations, people, posts, roles or #tags" value="${esc(q)}" aria-label="Search">
     </form>
     <div id="results">${q ? loading : `
       <div class="section-head"><h2>Popular tags</h2></div>
@@ -446,7 +577,7 @@ async function loadDiscover(q) {
   try {
     const r = await api(`/api/discover?q=${encodeURIComponent(q)}`);
     const html = [
-      resultSection('Airlines', r.airlines.length ? `<div class="list">${r.airlines.map(airlineRow).join('')}</div>` : ''),
+      resultSection('Organisations', r.airlines.length ? `<div class="list">${r.airlines.map(orgRow).join('')}</div>` : ''),
       resultSection('People', r.users.length ? `<div class="list">${r.users.map(userRow).join('')}</div>` : ''),
       resultSection('Roles', r.jobs.length ? `<div class="list">${r.jobs.map(jobRow).join('')}</div>` : ''),
       resultSection('Posts', r.posts.length ? `<div class="feed">${r.posts.map(postCard).join('')}</div>` : ''),
@@ -504,11 +635,12 @@ function convoRow(c) {
   const preview = c.lastMessage
     ? `${c.lastMessage.mine ? 'You: ' : ''}${esc(c.lastMessage.body)}`
     : (c.role === 'initiator' ? 'Request sent. Waiting for a reply.' : 'Wants to message you.');
+  const showHandle = c.other.displayName !== c.other.username;
   return `
     <a class="row convo${c.unread ? ' unread' : ''}" href="#/messages/${esc(c.id)}">
       ${avatar(c.other.displayName)}
       <div class="row-main">
-        <div class="row-title">${esc(c.other.displayName)}${c.other.displayName !== c.other.username ? ` <span class="handle-sm">@${esc(c.other.username)}</span>` : ''}</div>
+        <div class="row-title">${nameLine(c.other.displayName, { badges: c.other.badges })}${showHandle ? ` <span class="handle-sm">@${esc(c.other.username)}</span>` : ''}</div>
         <div class="row-sub clamp">${preview}</div>
       </div>
       <div class="row-end">
@@ -521,7 +653,7 @@ function convoRow(c) {
 async function renderMessages() {
   app.innerHTML = `
     ${pageHead('Messages')}
-    ${me.user ? '' : signInPrompt('Your messages', 'Sign in with Roblox to send and read direct messages.')}
+    ${me.user ? '' : signInPrompt('Your messages', 'Sign in to send and read direct messages.')}
     ${me.user ? `
       <div class="toolbar" style="padding-top:16px">${seg('messages', [['inbox', 'Inbox'], ['request', 'Requests']], messagesTab)}</div>
       <p class="muted small" style="padding:10px 0 0">${messagesTab === 'request'
@@ -604,7 +736,7 @@ function threadHeader(t) {
       <a class="row" style="border:0;padding:0;flex:1" href="#/u/${esc(t.other.username)}">
         ${avatar(t.other.displayName, { size: 'sm' })}
         <div class="row-main">
-          <div class="row-title">${esc(t.other.displayName)}</div>
+          <div class="row-title">${nameLine(t.other.displayName, { badges: t.other.badges })}</div>
           <div class="row-sub">@${esc(t.other.username)}</div>
         </div>
       </a>
@@ -619,7 +751,6 @@ function renderThreadChrome(t) {
   bindForm('[data-form="dm"]', (data) => send('POST', `/api/conversations/${encodeURIComponent(t.id)}/messages`, { body: data.body }), (msg, form) => {
     form.reset();
     appendMessages([msg], true);
-    renderedMessageIds.add(msg.id);
   });
   const dmForm = $('[data-form="dm"]');
   if (dmForm) {
@@ -636,8 +767,6 @@ function renderThreadChrome(t) {
     });
   }
 }
-
-let threadStateKey = null;
 
 async function loadThread(id, initial) {
   if (location.hash !== `#/messages/${id}`) return;
@@ -687,10 +816,10 @@ async function renderThread(id) {
 function renderJobs() {
   app.innerHTML = `
     ${pageHead('Jobs')}
-    <p class="lede" style="margin-top:20px;font-size:16px">Open roles from verified Roblox airlines. Applications go straight to the airline’s Discord.</p>
+    <p class="lede" style="margin-top:20px;font-size:16px">Open roles from verified organisations. Applications go straight to the organisation’s Discord.</p>
     <div class="toolbar" style="padding-top:14px">
       <label class="search" style="margin-top:0;flex:1 1 260px">${icon('search', { size: 18 })}
-        <input id="search" type="search" placeholder="Search roles or airlines" aria-label="Search jobs" value="${esc(jobFilter.q)}">
+        <input id="search" type="search" placeholder="Search roles or organisations" aria-label="Search jobs" value="${esc(jobFilter.q)}">
       </label>
     </div>
     <div class="toolbar" style="padding-top:4px">${seg('jobs', ROLE_FILTERS, jobFilter.role)}</div>
@@ -747,7 +876,7 @@ async function renderJob(id) {
         <h2>Apply</h2>
         <form class="form" data-form="apply">
           <label class="field">Roblox username
-            <input name="robloxUsername" required minlength="3" maxlength="20" pattern="[A-Za-z0-9_]{3,20}" autocomplete="off" value="${esc(me.user?.username || '')}">
+            <input name="robloxUsername" required minlength="3" maxlength="20" pattern="[A-Za-z0-9_]{3,20}" autocomplete="off" value="${esc(me.user?.robloxUsername || me.user?.username || '')}">
           </label>
           <label class="field">Why you?
             <textarea name="message" rows="4" maxlength="1000"></textarea>
@@ -762,8 +891,8 @@ async function renderJob(id) {
         <div class="form">
           <h2>Application sent</h2>
           <p class="muted">${result.delivered
-            ? 'The airline received it in their Discord.'
-            : 'Saved. This airline has not connected a Discord yet, so it was not forwarded.'}</p>
+            ? 'The organisation received it in their Discord.'
+            : 'Saved. This organisation has not connected a Discord yet, so it was not forwarded.'}</p>
           <div><a class="btn secondary" href="#/jobs">Back to roles</a></div>
         </div>`;
     });
@@ -772,19 +901,19 @@ async function renderJob(id) {
   }
 }
 
-// ---------- views: airlines ----------
+// ---------- views: organisations ----------
 
 async function renderAirlines() {
   app.innerHTML = `
-    ${pageHead('Airlines')}
+    ${pageHead('Organisations')}
     <div class="toolbar" style="padding-top:18px">
-      <span class="muted grow">Verified airlines post roles and updates. Unverified ones are still listed.</span>
-      <a class="btn primary small" href="#/claim">${icon('plus', { size: 16 })} List airline</a>
+      <span class="muted grow">Airlines, Roblox stores and other groups. Verified ones have proven their Roblox group.</span>
+      <a class="btn primary small" href="#/claim">${icon('plus', { size: 16 })} Set up</a>
     </div>
     <div id="list" class="list">${loading}</div>`;
   try {
-    const airlines = await api('/api/airlines');
-    $('#list').innerHTML = airlines.length ? airlines.map(airlineRow).join('') : '<p class="empty">No airlines yet.</p>';
+    const orgs = await api('/api/airlines');
+    $('#list').innerHTML = orgs.length ? orgs.map(orgRow).join('') : '<p class="empty">No organisations yet.</p>';
   } catch (err) {
     $('#list').innerHTML = errorBox(err.message);
   }
@@ -795,7 +924,7 @@ async function renderAirline(slug) {
     airlineTab = 'posts';
     airlineTabFor = slug;
   }
-  app.innerHTML = `${pageHead('Airline', { back: true })}${loading}`;
+  app.innerHTML = `${pageHead('Organisation', { back: true })}${loading}`;
   try {
     const a = await api(`/api/airlines/${encodeURIComponent(slug)}`);
     const mine = me.airlines.find((x) => x.slug === a.slug);
@@ -819,6 +948,7 @@ async function renderAirline(slug) {
         <div class="form" style="padding-top:20px">
           <p class="prose" style="padding:0">${esc(a.description || 'No description yet.')}</p>
           <div class="surface form" style="gap:10px">
+            <div class="row" style="border:0;padding:4px 0"><span class="muted grow">Type</span><span>${esc(a.kindLabel)}</span></div>
             <div class="row" style="border:0;padding:4px 0"><span class="muted grow">Status</span><span>${a.verified ? 'Verified' : 'Unverified'}</span></div>
             <div class="row" style="border:0;padding:4px 0"><span class="muted grow">Followers</span><span>${a.followers}</span></div>
             ${a.robloxGroupId ? `<div class="row" style="border:0;padding:4px 0"><span class="muted grow">Roblox group</span><a class="tag-link" href="https://www.roblox.com/communities/${esc(a.robloxGroupId)}" target="_blank" rel="noopener">View group ${icon('external', { size: 14 })}</a></div>` : ''}
@@ -861,7 +991,7 @@ async function renderAirline(slug) {
           ${avatar(a.name, { airline: true, size: 'lg' })}
           <div class="profile-id">
             <h1>${esc(a.name)}${a.verified ? VERIFIED : ''}</h1>
-            <p class="handle">${a.verified ? 'Verified airline' : 'Unverified airline'}${a.sample ? ' · sample' : ''}</p>
+            <p class="handle"><span class="kind">${esc(a.kindLabel)}</span> ${a.verified ? 'Verified' : 'Unverified'}${a.sample ? ' · sample' : ''}</p>
             <p class="bio">${esc(a.description || 'No description yet.')}</p>
             <div class="stats"><span><b>${a.followers}</b> followers</span><span><b>${a.jobs.length}</b> open roles</span><span><b>${a.posts.length}</b> posts</span></div>
           </div>
@@ -886,38 +1016,56 @@ async function renderAirline(slug) {
       route();
     });
   } catch (err) {
-    app.innerHTML = `${pageHead('Airline', { back: true })}${errorBox(err.message)}`;
+    app.innerHTML = `${pageHead('Organisation', { back: true })}${errorBox(err.message)}`;
   }
 }
 
 function renderClaim() {
   if (!me.user) {
-    app.innerHTML = `${pageHead('List an airline', { back: true })}${signInPrompt('Sign in to list your airline', 'Listing needs a Roblox account. You will verify the airline by signing in with the account that owns its group.')}`;
+    app.innerHTML = `${pageHead('Set up an organisation', { back: true })}${signInPrompt('Sign in to set up an organisation', 'You need a Jumpseat account with a confirmed Roblox account first.')}`;
+    return;
+  }
+  if (!me.user.confirmed) {
+    app.innerHTML = `
+      ${pageHead('Set up an organisation', { back: true })}
+      <section class="prompt">
+        <p class="kicker">One step first</p>
+        <h1 class="display">Confirm your Roblox account</h1>
+        <p class="lede">To set up an airline, store or other organisation, your Roblox account has to be confirmed. It takes about a minute: paste a short code into your Roblox About section.</p>
+        <div class="cta"><a class="btn primary" href="#/me">Confirm my account ${BADGE_HTML.confirmed}</a></div>
+      </section>`;
     return;
   }
   app.innerHTML = `
-    ${pageHead('List an airline', { back: true })}
-    <p class="lede" style="margin:20px 0;font-size:16px">Add your airline, then verify it by signing in with the Roblox account that owns the group. Verified airlines can post roles and updates.</p>
+    ${pageHead('Set up an organisation', { back: true })}
+    <p class="lede" style="margin:20px 0;font-size:16px">Add your organisation, then verify it by signing in with the Roblox account that owns the group. Verified organisations can post roles and updates.</p>
     <section class="surface">
       <form class="form" data-form="claim">
-        <label class="field">Airline name<input name="name" required maxlength="40"></label>
+        <label class="field">Type
+          <select name="kind">
+            <option value="airline">Airline</option>
+            <option value="store">Roblox store</option>
+            <option value="other">Other organisation</option>
+          </select>
+        </label>
+        <label class="field">Name<input name="name" required maxlength="40"></label>
         <label class="field">Roblox group ID<input name="robloxGroupId" required inputmode="numeric" pattern="\\d{1,12}" placeholder="e.g. 1234567"></label>
         <label class="field">Description<textarea name="description" rows="3" maxlength="500"></textarea></label>
         <label class="field">Discord invite (optional)<input name="discordInvite" placeholder="https://discord.gg/…"></label>
         <label class="field">Discord webhook (optional, receives applications)
           <input name="discordWebhook" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"></label>
-        <div><button class="btn primary" type="submit">Create listing</button></div>
+        <div><button class="btn primary" type="submit">Create</button></div>
         <p class="form-status" data-status></p>
       </form>
     </section>`;
 
-  bindForm('[data-form="claim"]', (data) => send('POST', '/api/airlines', data), async (airline, form) => {
+  bindForm('[data-form="claim"]', (data) => send('POST', '/api/airlines', data), async (org, form) => {
     await loadMe();
     form.outerHTML = `
       <div class="surface form">
-        <h2>${esc(airline.name)} is listed</h2>
+        <h2>${esc(org.name)} is set up</h2>
         <p class="muted">Verify it to unlock posting and roles. Sign in with the Roblox account that owns the group.</p>
-        <div><a class="btn primary" href="${esc(airline.verifyUrl)}">${icon('shield', { size: 16 })} Verify with Roblox</a></div>
+        <div><a class="btn primary" href="${esc(org.verifyUrl)}">${icon('shield', { size: 16 })} Verify with Roblox</a></div>
       </div>`;
   });
 }
@@ -952,8 +1100,8 @@ async function renderUser(username) {
         <div class="profile-top">
           ${avatar(u.displayName, { size: 'lg' })}
           <div class="profile-id">
-            <h1>${esc(u.displayName)}</h1>
-            <p class="handle">@${esc(u.username)}</p>
+            <h1>${nameLine(u.displayName, { badges: u.badges })}</h1>
+            <p class="handle">@${esc(u.username)}${u.confirmedRobloxName ? ` · Roblox @${esc(u.confirmedRobloxName)}` : ''}</p>
             ${u.bio ? `<p class="bio">${esc(u.bio)}</p>` : ''}
             ${runs}
             <div class="stats"><span><b>${u.followers}</b> followers</span><span><b>${u.following}</b> following</span><span><b>${u.posts.length}</b> posts</span></div>
@@ -967,9 +1115,48 @@ async function renderUser(username) {
   }
 }
 
+// The Roblox confirmation card. Three states: confirmed, code issued, or not started.
+function confirmCard() {
+  const u = me.user;
+  if (u.confirmed) {
+    return `
+      <section class="surface confirm-card done">
+        <div class="confirm-top">${BADGE_HTML.confirmed}<div><strong>Account confirmed</strong><p class="muted small">Roblox @${esc(u.robloxUsername || '')} is linked to this account.</p></div></div>
+      </section>`;
+  }
+  if (me.pendingRoblox) {
+    const p = me.pendingRoblox;
+    return `
+      <section class="surface confirm-card">
+        <h2>Confirm your Roblox account</h2>
+        <p class="muted">Add this code to the About section of <strong>@${esc(p.robloxUsername)}</strong> on Roblox, save your profile, then press Check.</p>
+        <div class="code-row">
+          <code class="code-box" id="confirm-code">${esc(p.code)}</code>
+          <button class="btn secondary small" data-action="copy-code" data-code="${esc(p.code)}">${icon('copy', { size: 15 })} Copy</button>
+        </div>
+        <p class="muted small">Valid until ${clock(p.expiresAt)} today. Roblox may take a moment to show a new About text.</p>
+        <div class="profile-actions">
+          <button class="btn primary" data-action="roblox-check">Check now</button>
+          <button class="btn secondary" data-action="roblox-cancel">Cancel</button>
+          ${me.devLogin ? '<button class="btn danger" data-action="roblox-dev">Confirm without check (dev only)</button>' : ''}
+        </div>
+      </section>`;
+  }
+  return `
+    <section class="surface confirm-card">
+      <h2>Confirm your Roblox account</h2>
+      <p class="muted">Needed before you can set up an airline, Roblox store or other organisation. You will get a short code to paste into your Roblox About. Nothing else is shared.</p>
+      <form class="form" data-form="roblox-start">
+        <label class="field">Your Roblox username<input name="username" required minlength="3" maxlength="20" pattern="[A-Za-z0-9_]{3,20}" autocomplete="off" placeholder="e.g. YourRobloxName"></label>
+        <div class="profile-actions"><button class="btn primary" type="submit">Get my code</button>${me.devLogin ? '<button class="btn danger" type="button" data-action="roblox-dev">Confirm without check (dev only)</button>' : ''}</div>
+        <p class="form-status" data-status></p>
+      </form>
+    </section>`;
+}
+
 function renderMe() {
   if (!me.user) {
-    app.innerHTML = `${pageHead('Profile')}${signInPrompt('Your Jumpseat account', 'Sign in with Roblox to post, follow, apply and message.')}`;
+    app.innerHTML = `${pageHead('Profile')}${signInPrompt('Your Jumpseat account', 'Sign in with Discord or Roblox to post, follow, apply and message.')}`;
     return;
   }
   const listings = me.airlines.length
@@ -977,12 +1164,12 @@ function renderMe() {
         <a class="row" href="#/airline/${esc(a.slug)}">
           ${avatar(a.name, { airline: true })}
           <div class="row-main">
-            <div class="row-title">${esc(a.name)}${a.verified ? VERIFIED : ''}</div>
+            <div class="row-title">${esc(a.name)}${a.verified ? VERIFIED : ''}<span class="kind">${esc(a.kindLabel)}</span></div>
             <div class="row-sub">${a.verified ? 'Verified' : 'Waiting for verification'}</div>
           </div>
           ${icon('chevron', { size: 18 })}
         </a>`).join('')}</div>`
-    : '<p class="muted">You have not listed an airline yet.</p>';
+    : '<p class="muted">You have not set up an organisation yet.</p>';
 
   app.innerHTML = `
     ${pageHead('Profile')}
@@ -990,7 +1177,7 @@ function renderMe() {
       <div class="profile-top">
         ${avatar(me.user.displayName, { size: 'lg' })}
         <div class="profile-id">
-          <h1>${esc(me.user.displayName)}</h1>
+          <h1>${nameLine(me.user.displayName, { badges: me.user.badges })}</h1>
           <p class="handle">@${esc(me.user.username)}</p>
           ${me.user.bio ? `<p class="bio">${esc(me.user.bio)}</p>` : ''}
           <div class="stats"><span><b>${me.following}</b> following</span></div>
@@ -998,8 +1185,18 @@ function renderMe() {
       </div>
       <div class="profile-actions">
         <a class="btn secondary" href="#/u/${esc(me.user.username)}">View public profile</a>
+        ${me.isAdmin ? '<a class="btn secondary" href="#/admin">Admin tools</a>' : ''}
         <button class="btn danger" data-action="logout">${icon('logout', { size: 16 })} Sign out</button>
       </div>
+    </section>
+
+    <div class="section-head"><h2>Account</h2></div>
+    ${confirmCard()}
+    <section class="surface badge-key">
+      <div class="key-row">${BADGE_HTML.confirmed}<span class="muted small">Confirmed account. Roblox linked with a code.</span></div>
+      <div class="key-row">${BADGE_HTML.member}<span class="muted small">Jumpseat verified member, granted by admins.</span></div>
+      <div class="key-row">${BADGE_HTML.admin}<span class="muted small">Admin.</span></div>
+      <div class="key-row">${VERIFIED}<span class="muted small">Verified organisation. Its Roblox group owner has signed in.</span></div>
     </section>
 
     <div class="section-head"><h2>Edit profile</h2></div>
@@ -1012,9 +1209,13 @@ function renderMe() {
       </form>
     </section>
 
-    <div class="section-head"><h2>Your airlines</h2><a class="btn secondary small" href="#/claim">${icon('plus', { size: 16 })} List airline</a></div>
+    <div class="section-head"><h2>Your organisations</h2><a class="btn secondary small" href="#/claim">${icon('plus', { size: 16 })} Set up</a></div>
     ${listings}`;
 
+  bindForm('[data-form="roblox-start"]', (data) => send('POST', '/api/me/roblox/start', { username: data.username }), async (result) => {
+    me.pendingRoblox = { code: result.code, robloxUsername: result.robloxUsername, expiresAt: result.expiresAt };
+    renderMe();
+  });
   bindForm('[data-form="profile"]', (data) => send('PATCH', '/api/me', data), async () => {
     toast('Profile saved');
     await loadMe();
@@ -1022,10 +1223,90 @@ function renderMe() {
   });
 }
 
+// ---------- views: admin ----------
+
+async function renderAdmin() {
+  if (!me.user || !me.isAdmin) {
+    app.innerHTML = `${pageHead('Admin', { back: true })}<p class="empty">Admins only.</p>`;
+    return;
+  }
+  app.innerHTML = `
+    ${pageHead('Admin tools', { back: true })}
+    <div class="toolbar" style="padding-top:16px">${seg('admin', [['reports', 'Reports'], ['members', 'Members']], adminTab)}</div>
+    <div id="admin-pane">${loading}</div>`;
+  if (adminTab === 'reports') loadAdminReports();
+  else loadAdminMembers('');
+}
+
+async function loadAdminReports() {
+  const pane = $('#admin-pane');
+  try {
+    const r = await api('/api/admin/reports');
+    const posts = r.posts.length
+      ? r.posts.map((item) => `
+          <article class="surface report">
+            <div class="report-meta">
+              <span class="pill">${plural(item.reportCount, 'report')}</span>
+              ${item.hidden ? '<span class="pill pill-warn">Hidden</span>' : ''}
+              <span class="muted small">${esc(item.reasons.join(' · '))}</span>
+            </div>
+            ${postCard(item.post)}
+            <div class="profile-actions">
+              <button class="btn secondary small" data-action="admin-restore" data-id="${esc(item.post.id)}">Restore</button>
+              <button class="btn danger small" data-action="admin-remove" data-id="${esc(item.post.id)}">Remove post</button>
+            </div>
+          </article>`).join('')
+      : '<p class="empty">No reported posts.</p>';
+    const dms = r.conversations.length
+      ? r.conversations.map((c) => `
+          <div class="row">
+            <div class="row-main"><div class="row-title">Conversation report</div><div class="row-sub">${esc(c.reason)} · from @${esc(c.reporter.username)} · ${timeAgo(c.createdAt)}</div></div>
+          </div>`).join('')
+      : '<p class="empty">No conversation reports.</p>';
+    pane.innerHTML = `
+      <div class="section-head"><h2>Reported posts</h2></div>
+      <div class="stack">${posts}</div>
+      <div class="section-head"><h2>Reported conversations</h2></div>
+      <p class="muted small">Message content is not shown here. Open a report with the moderation process before reading anything.</p>
+      <div class="list">${dms}</div>`;
+  } catch (err) {
+    pane.innerHTML = errorBox(err.message);
+  }
+}
+
+async function loadAdminMembers(q) {
+  const pane = $('#admin-pane');
+  pane.innerHTML = `
+    <div class="search" style="margin-top:16px">${icon('search', { size: 18 })}<input id="member-q" type="search" placeholder="Find a member by username" value="${esc(q)}" aria-label="Find member"></div>
+    <div id="member-list" class="list" style="margin-top:8px">${loading}</div>`;
+  let timer;
+  $('#member-q').addEventListener('input', (e) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => loadAdminMembers(e.target.value.trim()), 250);
+  });
+  try {
+    const users = await api(`/api/admin/users?q=${encodeURIComponent(q)}`);
+    $('#member-list').innerHTML = users.length
+      ? users.map((u) => `
+          <div class="row">
+            ${avatar(u.displayName)}
+            <div class="row-main">
+              <div class="row-title">${nameLine(u.displayName, { badges: u.badges })}</div>
+              <div class="row-sub">@${esc(u.username)}${u.confirmed ? '' : ' · not confirmed'}</div>
+            </div>
+            <button class="btn ${u.verifiedMember ? 'secondary' : 'primary'} small" data-action="admin-member" data-id="${esc(u.id)}" data-value="${u.verifiedMember ? '0' : '1'}">${u.verifiedMember ? 'Remove gold check' : 'Grant gold check'}</button>
+          </div>`).join('')
+      : '<p class="empty">No matching members.</p>';
+  } catch (err) {
+    $('#member-list').innerHTML = errorBox(err.message);
+  }
+}
+
 // ---------- routing ----------
 
 const routes = [
   [/^#\/?$/, () => renderHome()],
+  [/^#\/feed$/, () => renderFeed()],
   [/^#\/discover(?:\?q=(.*))?$/, (m) => renderDiscover(safeDecode(m[1]))],
   [/^#\/messages$/, () => renderMessages()],
   [/^#\/messages\/([\w-]+)$/, (m) => renderThread(m[1])],
@@ -1037,6 +1318,7 @@ const routes = [
   [/^#\/post\/([\w-]+)$/, (m) => renderPost(m[1])],
   [/^#\/tag\/(\w+)$/, (m) => renderTag(m[1])],
   [/^#\/me$/, () => renderMe()],
+  [/^#\/admin$/, () => renderAdmin()],
   [/^#\/claim$/, () => renderClaim()],
 ];
 
@@ -1064,7 +1346,7 @@ function route() {
   }
 }
 
-// Clicks are handled in one place: tabs, like, report, delete, follow, DMs, sign out, back.
+// Clicks are handled in one place: tabs, like, report, delete, follow, DMs, confirmation, admin, sign out.
 app.addEventListener('click', async (e) => {
   const tab = e.target.closest('[data-tab]');
   if (tab) {
@@ -1072,7 +1354,11 @@ app.addEventListener('click', async (e) => {
     if (tab.dataset.scope === 'home') homeTab = value;
     else if (tab.dataset.scope === 'airline') airlineTab = value;
     else if (tab.dataset.scope === 'messages') messagesTab = value;
-    else if (tab.dataset.scope === 'jobs') return; // handled by the jobs filter listener
+    else if (tab.dataset.scope === 'admin') {
+      adminTab = value;
+      renderAdmin();
+      return;
+    } else if (tab.dataset.scope === 'jobs') return; // handled by the jobs filter listener
     route();
     return;
   }
@@ -1129,6 +1415,41 @@ app.addEventListener('click', async (e) => {
       if (!confirm('Report this conversation to the moderators? The other person will not be told.')) return;
       await send('POST', `/api/conversations/${id}/report`, { reason: 'reported conversation' });
       toast('Report sent');
+    } else if (action === 'copy-code') {
+      await navigator.clipboard.writeText(btn.dataset.code);
+      toast('Code copied');
+    } else if (action === 'roblox-check') {
+      btn.disabled = true;
+      try {
+        await send('POST', '/api/me/roblox/check');
+        toast('Confirmed. The green house is on your profile.');
+        await loadMe();
+        route();
+      } finally {
+        btn.disabled = false;
+      }
+    } else if (action === 'roblox-cancel') {
+      await send('POST', '/api/me/roblox/cancel');
+      me.pendingRoblox = null;
+      renderMe();
+    } else if (action === 'roblox-dev') {
+      await send('POST', '/api/me/roblox/dev-confirm');
+      toast('Confirmed (dev)');
+      await loadMe();
+      route();
+    } else if (action === 'admin-restore') {
+      await send('POST', `/api/admin/posts/${id}/restore`);
+      toast('Post restored');
+      loadAdminReports();
+    } else if (action === 'admin-remove') {
+      if (!confirm('Remove this post permanently?')) return;
+      await send('POST', `/api/admin/posts/${id}/remove`);
+      toast('Post removed');
+      loadAdminReports();
+    } else if (action === 'admin-member') {
+      const r = await send('POST', `/api/admin/users/${id}/member`, { verified: btn.dataset.value === '1' });
+      toast(r.badges.includes('member') ? 'Gold check granted' : 'Gold check removed');
+      loadAdminMembers($('#member-q')?.value.trim() || '');
     } else if (action === 'logout') {
       await send('POST', '/auth/logout');
       await loadMe();
@@ -1140,6 +1461,8 @@ app.addEventListener('click', async (e) => {
     toast(err.message);
   }
 });
+
+// Account form for Roblox confirmation: the Get-code form is bound in renderMe. Nothing else to wire here.
 
 // Start the router last, after every view and handler is defined.
 window.addEventListener('hashchange', route);

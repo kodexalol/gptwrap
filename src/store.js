@@ -8,10 +8,11 @@ const hoursAgo = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
 // Sample content so the site is not empty on first run.
 // Everything here is fake and exists only for local development and screenshots.
 function seed() {
-  const airline = (id, slug, name, description, verified, createdAt) => ({
+  const airline = (id, slug, name, description, verified, createdAt, kind = 'airline') => ({
     id,
     slug,
     name,
+    kind,
     description,
     robloxGroupId: null,
     verified,
@@ -32,12 +33,17 @@ function seed() {
     open: true,
     createdAt,
   });
+  // Sample accounts are pre-confirmed so their badges show on first run. They have no real Roblox link.
   const user = (id, username, displayName, bio, createdAt) => ({
     id,
     robloxUserId: null,
+    robloxUsername: username,
+    confirmed: true,
+    pendingRoblox: null,
     username,
     displayName,
     bio,
+    verifiedMember: username === 'maya_flies',
     createdAt,
   });
   const post = (id, authorType, airlineId, authorUserId, body, tags, h) => ({
@@ -64,6 +70,7 @@ function seed() {
       airline('air-harbor', 'harbor-jet', 'Harbor Jet', 'Short-haul carrier with fast turns and friendly crews.', true, created),
       airline('air-cobalt', 'cobalt-regional', 'Cobalt Regional', 'Small-fleet regional carrier, growing its crew team this season.', true, created),
       airline('air-skybridge', 'skybridge', 'Skybridge', 'New carrier, still waiting on verification.', false, created),
+      airline('air-skyline-store', 'skyline-rostore', 'Skyline Rostore', 'Sample Roblox store selling livery, uniforms and aircraft parts.', true, created, 'store'),
     ],
     jobs: [
       job('job-first-officer', 'air-northwind', 'First Officer', 'pilot', 'Two-pilot operations, flexible rotations, paid type training. Current licence required.', hoursAgo(72)),

@@ -137,7 +137,7 @@ p { margin: 0; }
   backdrop-filter: blur(20px) saturate(150%);
   border-top: 1px solid var(--hairline);
 }
-.tab-link { display: grid; justify-items: center; gap: 2px; font-size: 11px; color: var(--text-2); padding: 4px 10px; min-width: 60px; }
+.tab-link { display: grid; justify-items: center; gap: 2px; font-size: 10.5px; color: var(--text-2); padding: 4px 2px; min-width: 0; flex: 1; }
 .tab-link.active { color: var(--text); }
 
 /* ---------- page header (the one place we use glass) ---------- */
@@ -489,6 +489,97 @@ a.row:hover .row-title { text-decoration: underline; text-underline-offset: 3px;
   .thread-foot { margin: 0 -16px; padding: 12px 16px calc(14px + env(safe-area-inset-bottom)); }
   .bubble-row { max-width: 88%; }
 }
+
+/* ---------- badges ---------- */
+
+.badge {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex: none;
+  margin-left: 4px;
+  vertical-align: -4px;
+}
+.badge svg { width: 12px; height: 12px; }
+/* Confirmed: green house */
+.b-confirmed { background: #30d158; }
+/* Admin: red gradient with a tools icon (the one gradient on purpose) */
+.b-admin {
+  background: linear-gradient(160deg, #ff6b6b 0%, #d7261e 55%, #8e0d0a 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+/* Verified member: gold clover with a check. Solid gold, no gradient. */
+.badge-clover { width: 20px; height: 20px; margin-left: 4px; vertical-align: -5px; flex: none; display: inline-block; }
+.kind {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--pill);
+  padding: 1px 8px;
+  margin-left: 8px;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+.pill-warn { background: rgba(255, 159, 10, 0.16); color: #ffb340; }
+
+.badge-key { display: grid; gap: 10px; padding: 16px 20px; margin-bottom: 8px; }
+.key-row { display: flex; align-items: center; gap: 10px; }
+.key-row .badge, .key-row .verified, .key-row .badge-clover { margin: 0; }
+
+/* ---------- home dashboard ---------- */
+
+.home-hero { padding: 28px 0 4px; }
+.stat-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.stat { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: 14px 16px; display: grid; gap: 2px; }
+.stat strong { font-size: 26px; letter-spacing: -0.02em; }
+.stat span { font-size: 13px; color: var(--text-2); }
+
+.checklist { margin-top: 18px; padding: 18px 20px; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; }
+.step { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--hairline); }
+.step:first-child { border-top: 0; }
+.step-mark { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--hairline-2); display: grid; place-items: center; color: #fff; }
+.step.done .step-mark { background: var(--ok); border-color: var(--ok); }
+.step.done .step-text strong { color: var(--text-2); }
+.step-text { display: grid; gap: 2px; min-width: 0; }
+.step-text strong { font-weight: 600; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+
+.org-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.card { display: block; transition: transform 0.25s ease, border-color 0.25s ease; }
+.card:hover { transform: translateY(-2px); border-color: var(--hairline-2); }
+.org-grid .card { padding: 18px; }
+.org-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.org-name { font-size: 17px; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+
+/* ---------- confirmation ---------- */
+
+.confirm-card { display: grid; gap: 12px; padding: 20px; margin-bottom: 18px; }
+.confirm-card h2 { margin: 0; font-size: 18px; }
+.confirm-card.done { padding: 16px 20px; }
+.confirm-top { display: flex; align-items: center; gap: 14px; }
+.confirm-top .badge { width: 34px; height: 34px; margin: 0; }
+.confirm-top .badge svg { width: 20px; height: 20px; }
+.code-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.code-box {
+  font: 600 22px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  user-select: all;
+}
+
+/* ---------- admin ---------- */
+
+.report { display: grid; gap: 12px; padding: 16px 18px; margin-bottom: 12px; }
+.report-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.report .post { border-bottom: 0; padding: 0; }
+.stack-btn { display: grid; gap: 10px; margin: 8px 0 16px; }
 
 /* ---------- video ---------- */
 

@@ -10,31 +10,48 @@ const { now, sha256, escapeHtml, byNewest, extractTags, parseMedia, rateLimit } 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const SECURE_COOKIES = PUBLIC_URL.startsWith('https://');
-// Dev sign-in lets you test without Roblox credentials. It is off unless explicitly enabled.
+// Dev sign-in lets you test without OAuth credentials. It is off unless explicitly enabled.
 const DEV_LOGIN = process.env.ALLOW_DEV_LOGIN === '1' && process.env.NODE_ENV !== 'production';
+// Comma-separated Roblox-style usernames that get admin tools, e.g. ADMIN_USERNAMES=alice,bob
+const ADMIN_USERNAMES = (process.env.ADMIN_USERNAMES || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 
 const ROLES = ['pilot', 'cabin-crew', 'ground'];
 const ROLE_LABELS = { pilot: 'Pilot', 'cabin-crew': 'Cabin Crew', ground: 'Ground Ops' };
-const LIMITS = { postBody: 500, commentBody: 280, bio: 160, displayName: 40, reportReason: 200, airlinesPerUser: 3 };
+const KINDS = { airline: 'Airline', store: 'Roblox store', other: 'Organisation' };
+const LIMITS = { postBody: 500, commentBody: 280, bio: 160, displayName: 40, reportReason: 200, orgsPerUser: 3 };
 const REPORT_HIDE_THRESHOLD = 3;
 const STATE_TTL_MS = 10 * 60 * 1000;
+const CODE_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
 const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const roblox = {
   clientId: process.env.ROBLOX_CLIENT_ID || '',
   clientSecret: process.env.ROBLOX_CLIENT_SECRET || '',
   redirectUri: process.env.ROBLOX_REDIRECT_URI || `${PUBLIC_URL}/auth/roblox/callback`,
-  // Confirm these against the current Open Cloud OAuth 2.0 reference before going live.
+  // Confirm these against the current Open Cloud and Roblox web API docs before going live.
   authorizeUrl: 'https://apis.roblox.com/oauth/v1/authorize',
   tokenUrl: 'https://apis.roblox.com/oauth/v1/token',
   userinfoUrl: 'https://apis.roblox.com/oauth/v1/userinfo',
   groupUrl: 'https://groups.roblox.com/v1/groups/',
+  usernamesUrl: 'https://users.roblox.com/v1/usernames/users',
+  userUrl: 'https://users.roblox.com/v1/users/',
 };
 const robloxConfigured = Boolean(roblox.clientId && roblox.clientSecret);
 
+const discord = {
+  clientId: process.env.DISCORD_CLIENT_ID || '',
+  clientSecret: process.env.DISCORD_CLIENT_SECRET || '',
+  redirectUri: process.env.DISCORD_REDIRECT_URI || `${PUBLIC_URL}/auth/discord/callback`,
+  authorizeUrl: 'https://discord.com/oauth2/authorize',
+  tokenUrl: 'https://discord.com/api/oauth2/token',
+  userUrl: 'https://discord.com/api/users/@me',
+};
+const discordConfigured = Boolean(discord.clientId && discord.clientSecret);
+
 const store = new Store(path.join(__dirname, 'data', 'db.json'));
-const oauthStates = new Map(); // state -> { airlineSlug, expiresAt }
+const oauthStates = new Map(); // state -> { provider, airlineSlug, expiresAt }
 
 setInterval(() => {
   const t = Date.now();
@@ -53,8 +70,18 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------- helpers ----------
 
-const fail = (res, status, error) => res.status(status).json({ error });
-const requireUser = (req, res, next) => (req.user ? next() : fail(res, 401, 'Sign in with Roblox first'));
+const fail = (res, status, error, extra = {}) => res.status(status).json({ error, ...extra });
+const requireUser = (req, res, next) => (req.user ? next() : fail(res, 401, 'Sign in first'));
+const requireAdmin = (req, res, next) => (req.user && isAdmin(req.user) ? next() : fail(res, 403, 'Admins only'));
+
+const isAdmin = (user) => Boolean(user) && ADMIN_USERNAMES.includes(user.username.toLowerCase());
+const badgesOf = (u) => {
+  const out = [];
+  if (u.confirmed) out.push('confirmed');
+  if (u.verifiedMember) out.push('member');
+  if (isAdmin(u)) out.push('admin');
+  return out;
+};
 
 const findAirline = (slug) => store.data.airlines.find((a) => a.slug === slug);
 const findAirlineById = (id) => store.data.airlines.find((a) => a.id === id);
@@ -85,7 +112,16 @@ function publicUser(u) {
     displayName: u.displayName || u.username,
     bio: u.bio || '',
     createdAt: u.createdAt,
+    badges: badgesOf(u),
+    confirmedRobloxName: u.confirmed ? u.robloxUsername || null : null,
   };
+}
+
+function miniUser(id) {
+  const u = store.data.users.find((x) => x.id === id);
+  return u
+    ? { id: u.id, username: u.username, displayName: u.displayName || u.username, badges: badgesOf(u) }
+    : { id, username: 'unknown', displayName: 'unknown', badges: [] };
 }
 
 function authorOf(post) {
@@ -94,8 +130,9 @@ function authorOf(post) {
     return {
       type: 'airline',
       slug: airline?.slug || null,
-      name: airline?.name || 'Unknown airline',
+      name: airline?.name || 'Unknown organisation',
       verified: Boolean(airline?.verified),
+      kind: airline?.kind || 'airline',
     };
   }
   const user = store.data.users.find((u) => u.id === post.authorUserId);
@@ -103,6 +140,7 @@ function authorOf(post) {
     type: 'user',
     username: user?.username || 'unknown',
     name: user?.displayName || user?.username || 'unknown',
+    badges: user ? badgesOf(user) : [],
   };
 }
 
@@ -129,7 +167,11 @@ function publicComment(c, viewer) {
     id: c.id,
     body: c.body,
     createdAt: c.createdAt,
-    author: { username: user?.username || 'unknown', name: user?.displayName || user?.username || 'unknown' },
+    author: {
+      username: user?.username || 'unknown',
+      name: user?.displayName || user?.username || 'unknown',
+      badges: user ? badgesOf(user) : [],
+    },
     mine: Boolean(viewer) && c.authorUserId === viewer.id,
   };
 }
@@ -139,6 +181,8 @@ function publicAirline(a, viewer) {
     id: a.id,
     slug: a.slug,
     name: a.name,
+    kind: a.kind || 'airline',
+    kindLabel: KINDS[a.kind || 'airline'],
     description: a.description,
     verified: a.verified,
     sample: Boolean(a.sample),
@@ -162,7 +206,7 @@ function publicJob(job) {
     description: job.description,
     open: job.open,
     createdAt: job.createdAt,
-    airline: airline ? { slug: airline.slug, name: airline.name, verified: airline.verified } : null,
+    airline: airline ? { slug: airline.slug, name: airline.name, verified: airline.verified, kind: airline.kind || 'airline' } : null,
   };
 }
 
@@ -190,19 +234,59 @@ function validateJobFields(body) {
   return { value: { title, role, description } };
 }
 
-// Shared by the Roblox and dev sign-in paths. Creates or updates the user record.
+// Unique Jumpseat username from a provider name, e.g. a Discord handle.
+function uniqueUsername(base, suffix) {
+  let clean = String(base || '').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 15);
+  if (clean.length < 3) clean = `user_${clean}`.slice(0, 15);
+  const taken = (name) => store.data.users.some((u) => u.username.toLowerCase() === name.toLowerCase());
+  if (!taken(clean)) return clean;
+  let candidate = `${clean.slice(0, 11)}_${String(suffix).slice(-4)}`;
+  let n = 2;
+  while (taken(candidate)) candidate = `${clean.slice(0, 10)}_${n++}`;
+  return candidate;
+}
+
+function upsertDiscordUser(discordId, discordName, globalName) {
+  let user = store.data.users.find((u) => u.discordId === discordId);
+  if (!user) {
+    const username = uniqueUsername(discordName, discordId);
+    user = {
+      id: crypto.randomUUID(),
+      discordId,
+      discordUsername: discordName,
+      robloxUserId: null,
+      robloxUsername: null,
+      confirmed: false,
+      pendingRoblox: null,
+      username,
+      displayName: globalName || username,
+      bio: '',
+      verifiedMember: false,
+      createdAt: now(),
+    };
+    store.data.users.push(user);
+  } else {
+    user.discordUsername = discordName;
+  }
+  return user;
+}
+
+// Shared by Roblox sign-in and dev sign-in. Creates or updates the user record.
 function upsertRobloxUser(robloxUserId, rawName) {
   const cleanName = USERNAME_RE.test(rawName || '') ? rawName : null;
   let user = store.data.users.find((u) => u.robloxUserId === robloxUserId);
   if (!user) {
     const base = cleanName || `user_${robloxUserId.slice(-6)}`;
-    const taken = store.data.users.some((u) => u.username.toLowerCase() === base.toLowerCase());
     user = {
       id: crypto.randomUUID(),
       robloxUserId,
-      username: taken ? `${base.slice(0, 15)}_${robloxUserId.slice(-4)}` : base,
+      robloxUsername: cleanName,
+      confirmed: false,
+      pendingRoblox: null,
+      username: uniqueUsername(base, robloxUserId),
       displayName: base,
       bio: '',
+      verifiedMember: false,
       createdAt: now(),
     };
     store.data.users.push(user);
@@ -215,6 +299,12 @@ function upsertRobloxUser(robloxUserId, rawName) {
 
 function devRobloxId(username) {
   return String(1e9 + (parseInt(sha256(username.toLowerCase()).slice(0, 8), 16) % 1e9));
+}
+
+function randomCode() {
+  let out = 'JS-';
+  for (let i = 0; i < 6; i++) out += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
+  return out;
 }
 
 // ---------- HTML pages for the auth flow ----------
@@ -242,23 +332,124 @@ function sendPage(res, status, title, body) {
     .send(page(title, `<h1>${escapeHtml(title)}</h1><p class="muted">${escapeHtml(body)}</p><a class="btn" href="/">Back to Jumpseat</a>`));
 }
 
-function devLoginPage(airline) {
-  return page(
-    'Dev sign-in',
-    `<p class="eyebrow">Development only</p>
-<h1>Sign in</h1>
-<p class="muted">Roblox sign-in is not configured here, so pick any username to test with.</p>
-<form method="get" action="/auth/dev" class="form">
-  <input type="hidden" name="airline" value="${escapeHtml(airline)}">
-  <label>Username
-    <input name="username" required minlength="3" maxlength="20" pattern="[A-Za-z0-9_]{3,20}" autocomplete="off">
-  </label>
-  <button class="btn" type="submit">Continue</button>
-</form>`,
-  );
+function signInPage(airlineSlug) {
+  const buttons = [];
+  if (discordConfigured) buttons.push('<a class="btn primary wide" href="/auth/discord">Continue with Discord</a>');
+  if (robloxConfigured) {
+    buttons.push(`<a class="btn secondary wide" href="/auth/roblox${airlineSlug ? `?airline=${encodeURIComponent(airlineSlug)}` : ''}">Continue with Roblox</a>`);
+  }
+  const devForm = DEV_LOGIN ? `
+    <p class="eyebrow" style="margin-top:20px">Development only</p>
+    <form method="get" action="/auth/dev">
+      <input type="hidden" name="airline" value="${escapeHtml(airlineSlug || '')}">
+      <label>Username<input name="username" required minlength="3" maxlength="20" pattern="[A-Za-z0-9_]{3,20}" autocomplete="off"></label>
+      <button class="btn secondary" type="submit">Sign in as this username</button>
+    </form>` : '';
+  const body = buttons.length ? buttons.join('') : '<p class="muted">No sign-in method is configured on this server.</p>';
+  return page('Sign in', `
+    <p class="eyebrow">Jumpseat</p>
+    <h1>Sign in</h1>
+    <p class="muted">Sign in with the account you already use. To post as an organisation you will also confirm a Roblox account with a short code.</p>
+    <div class="stack-btn">${body}</div>
+    ${devForm}`);
 }
 
-// ---------- Roblox and dev sign-in ----------
+// ---------- sign-in: Discord, Roblox, dev ----------
+
+app.get('/auth/login', (req, res) => {
+  const airline = String(req.query.airline || '');
+  if (!discordConfigured && !robloxConfigured && !DEV_LOGIN) {
+    return sendPage(res, 503, 'Sign-in unavailable', 'No sign-in provider is configured on this server.');
+  }
+  return res.type('html').send(signInPage(airline));
+});
+
+app.get('/auth/discord', (req, res) => {
+  if (!discordConfigured) {
+    if (DEV_LOGIN) return res.redirect('/auth/login');
+    return sendPage(res, 503, 'Discord sign-in unavailable', 'Discord sign-in is not configured on this server.');
+  }
+  const state = crypto.randomBytes(24).toString('base64url');
+  oauthStates.set(state, { provider: 'discord', airlineSlug: null, expiresAt: Date.now() + STATE_TTL_MS });
+  const url = new URL(discord.authorizeUrl);
+  url.search = new URLSearchParams({
+    client_id: discord.clientId,
+    redirect_uri: discord.redirectUri,
+    response_type: 'code',
+    scope: 'identify',
+    state,
+  }).toString();
+  res.redirect(url.toString());
+});
+
+app.get('/auth/discord/callback', async (req, res) => {
+  const state = String(req.query.state || '');
+  const entry = oauthStates.get(state);
+  oauthStates.delete(state);
+  if (!entry || entry.provider !== 'discord' || entry.expiresAt < Date.now()) {
+    return sendPage(res, 400, 'Link expired', 'Start sign-in again from Jumpseat.');
+  }
+  if (req.query.error) return sendPage(res, 400, 'Sign-in cancelled', 'You did not finish signing in with Discord.');
+
+  try {
+    const tokenRes = await fetch(discord.tokenUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: discord.clientId,
+        client_secret: discord.clientSecret,
+        grant_type: 'authorization_code',
+        code: String(req.query.code || ''),
+        redirect_uri: discord.redirectUri,
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!tokenRes.ok) throw new Error(`discord token exchange failed: ${tokenRes.status}`);
+    const { access_token: accessToken } = await tokenRes.json();
+
+    const userRes = await fetch(discord.userUrl, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!userRes.ok) throw new Error(`discord user lookup failed: ${userRes.status}`);
+    const me = await userRes.json();
+    if (!me.id) throw new Error('discord user had no id');
+
+    const user = upsertDiscordUser(String(me.id), me.username || '', me.global_name || '');
+    store.save();
+    auth.setSessionCookie(res, auth.createSession(store, user.id), SECURE_COOKIES);
+    return res.redirect('/#/');
+  } catch (err) {
+    console.error('discord sign-in failed:', err.message);
+    return sendPage(res, 502, 'Sign-in failed', 'Could not confirm with Discord. Try again in a moment.');
+  }
+});
+
+app.get('/auth/roblox', (req, res) => {
+  const airlineSlug = String(req.query.airline || '');
+  if (!robloxConfigured) {
+    if (DEV_LOGIN) return res.redirect(`/auth/login${airlineSlug ? `?airline=${encodeURIComponent(airlineSlug)}` : ''}`);
+    return sendPage(res, 503, 'Roblox sign-in unavailable', 'Roblox sign-in is not configured on this server.');
+  }
+  if (airlineSlug) {
+    const airline = findAirline(airlineSlug);
+    if (!airline || airline.verified) {
+      return sendPage(res, 404, 'Nothing to verify', 'That organisation does not exist or is already verified.');
+    }
+  }
+  const state = crypto.randomBytes(24).toString('base64url');
+  oauthStates.set(state, { provider: 'roblox', airlineSlug: airlineSlug || null, expiresAt: Date.now() + STATE_TTL_MS });
+
+  const url = new URL(roblox.authorizeUrl);
+  url.search = new URLSearchParams({
+    client_id: roblox.clientId,
+    redirect_uri: roblox.redirectUri,
+    response_type: 'code',
+    scope: 'openid profile',
+    state,
+  }).toString();
+  res.redirect(url.toString());
+});
 
 async function fetchRobloxUserInfo(code) {
   const tokenRes = await fetch(roblox.tokenUrl, {
@@ -283,10 +474,7 @@ async function fetchRobloxUserInfo(code) {
   if (!infoRes.ok) throw new Error(`userinfo failed: ${infoRes.status}`);
   const info = await infoRes.json();
   if (!info.sub) throw new Error('userinfo response had no sub');
-  return {
-    sub: String(info.sub),
-    username: info.preferred_username || info.nickname || info.name || '',
-  };
+  return { sub: String(info.sub), username: info.preferred_username || info.nickname || info.name || '' };
 }
 
 async function fetchGroupOwnerId(groupId) {
@@ -298,79 +486,44 @@ async function fetchGroupOwnerId(groupId) {
   return group.owner?.userId != null ? String(group.owner.userId) : null;
 }
 
-app.get('/auth/login', (req, res) => {
-  const airline = String(req.query.airline || '');
-  if (robloxConfigured) {
-    return res.redirect(`/auth/roblox${airline ? `?airline=${encodeURIComponent(airline)}` : ''}`);
-  }
-  if (DEV_LOGIN) return res.type('html').send(devLoginPage(airline));
-  return sendPage(res, 503, 'Sign-in unavailable', 'Roblox sign-in is not configured on this server.');
-});
-
-app.get('/auth/roblox', (req, res) => {
-  const airlineSlug = String(req.query.airline || '');
-  if (!robloxConfigured) {
-    if (DEV_LOGIN) return res.redirect(`/auth/login${airlineSlug ? `?airline=${encodeURIComponent(airlineSlug)}` : ''}`);
-    return sendPage(res, 503, 'Sign-in unavailable', 'Roblox sign-in is not configured on this server.');
-  }
-  if (airlineSlug) {
-    const airline = findAirline(airlineSlug);
-    if (!airline || airline.verified) {
-      return sendPage(res, 404, 'Nothing to verify', 'That airline does not exist or is already verified.');
-    }
-  }
-
-  const state = crypto.randomBytes(24).toString('base64url');
-  oauthStates.set(state, { airlineSlug: airlineSlug || null, expiresAt: Date.now() + STATE_TTL_MS });
-
-  const url = new URL(roblox.authorizeUrl);
-  url.search = new URLSearchParams({
-    client_id: roblox.clientId,
-    redirect_uri: roblox.redirectUri,
-    response_type: 'code',
-    scope: 'openid profile',
-    state,
-  }).toString();
-  res.redirect(url.toString());
-});
-
 app.get('/auth/roblox/callback', async (req, res) => {
   const state = String(req.query.state || '');
   const entry = oauthStates.get(state);
   oauthStates.delete(state);
-  if (!entry || entry.expiresAt < Date.now()) {
+  if (!entry || entry.provider !== 'roblox' || entry.expiresAt < Date.now()) {
     return sendPage(res, 400, 'Link expired', 'Start sign-in again from Jumpseat.');
   }
-  if (req.query.error) {
-    return sendPage(res, 400, 'Sign-in cancelled', 'You did not finish signing in with Roblox.');
-  }
+  if (req.query.error) return sendPage(res, 400, 'Sign-in cancelled', 'You did not finish signing in with Roblox.');
 
   const airline = entry.airlineSlug ? findAirline(entry.airlineSlug) : null;
   if (entry.airlineSlug && (!airline || airline.verified)) {
-    return sendPage(res, 404, 'Nothing to verify', 'That airline does not exist or is already verified.');
+    return sendPage(res, 404, 'Nothing to verify', 'That organisation does not exist or is already verified.');
   }
 
   try {
     const info = await fetchRobloxUserInfo(String(req.query.code || ''));
-    const user = upsertRobloxUser(info.sub, info.username);
-    auth.setSessionCookie(res, auth.createSession(store, user.id), SECURE_COOKIES);
 
-    if (!airline) return res.redirect('/#/me');
-
-    const ownerId = await fetchGroupOwnerId(airline.robloxGroupId);
-    if (!ownerId || ownerId !== info.sub) {
-      return sendPage(
-        res,
-        403,
-        'Not the group owner',
-        `You are signed in as @${user.username}, but that account does not own this Roblox group.`,
-      );
+    if (airline) {
+      // Group verification: the signed-in Jumpseat account must be confirmed, and must be the group owner.
+      if (!req.user) return sendPage(res, 401, 'Sign in first', 'Sign in to Jumpseat, then verify the organisation again.');
+      if (!req.user.confirmed || req.user.robloxUserId !== info.sub) {
+        return sendPage(res, 403, 'Confirm your Roblox account first', 'The Roblox account you sign in with must be the one you confirmed on your Jumpseat profile.');
+      }
+      const ownerId = await fetchGroupOwnerId(airline.robloxGroupId);
+      if (!ownerId || ownerId !== info.sub) {
+        return sendPage(res, 403, 'Not the group owner', 'Verification needs the Roblox account that owns this group.');
+      }
+      Object.assign(airline, { verified: true, ownerUserId: req.user.id, ownerRobloxId: info.sub });
+      store.save();
+      return res.redirect(`/#/airline/${encodeURIComponent(airline.slug)}`);
     }
-    Object.assign(airline, { verified: true, ownerUserId: user.id, ownerRobloxId: info.sub });
+
+    const user = upsertRobloxUser(info.sub, info.username);
     store.save();
-    return res.redirect(`/#/airline/${encodeURIComponent(airline.slug)}`);
+    auth.setSessionCookie(res, auth.createSession(store, user.id), SECURE_COOKIES);
+    return res.redirect('/#/');
   } catch (err) {
-    console.error('sign-in failed:', err.message);
+    console.error('roblox sign-in failed:', err.message);
     return sendPage(res, 502, 'Sign-in failed', 'Could not confirm with Roblox. Try again in a moment.');
   }
 });
@@ -379,17 +532,19 @@ app.get('/auth/roblox/callback', async (req, res) => {
 app.get('/auth/dev', (req, res) => {
   if (!DEV_LOGIN) return sendPage(res, 404, 'Not found', 'Dev sign-in is disabled.');
   const username = String(req.query.username || '').trim();
-  if (!USERNAME_RE.test(username)) {
-    return sendPage(res, 400, 'Invalid username', 'Use 3–20 letters, numbers or underscores.');
-  }
+  if (!USERNAME_RE.test(username)) return sendPage(res, 400, 'Invalid username', 'Use 3–20 letters, numbers or underscores.');
+
   const user = upsertRobloxUser(devRobloxId(username), username);
+  // Dev only: treat the account as confirmed so the organisation flow can be tested offline.
+  Object.assign(user, { confirmed: true, robloxUserId: devRobloxId(username), robloxUsername: username });
+  store.save();
   auth.setSessionCookie(res, auth.createSession(store, user.id), SECURE_COOKIES);
 
   const airlineSlug = String(req.query.airline || '');
   const airline = airlineSlug ? findAirline(airlineSlug) : null;
   if (airline && !airline.verified) {
-    // Dev only: skips the group-owner check so the flow can be tested without a real group.
-    Object.assign(airline, { verified: true, ownerUserId: user.id, ownerRobloxId: devRobloxId(username) });
+    // Dev only: skips the group-owner check.
+    Object.assign(airline, { verified: true, ownerUserId: user.id, ownerRobloxId: user.robloxUserId });
     store.save();
     return res.redirect(`/#/airline/${encodeURIComponent(airline.slug)}`);
   }
@@ -402,16 +557,32 @@ app.post('/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- me ----------
+// ---------- me, Roblox confirmation ----------
 
 app.get('/api/me', (req, res) => {
   if (!req.user) {
-    return res.json({ user: null, airlines: [], devLogin: DEV_LOGIN, robloxConfigured });
+    return res.json({ user: null, airlines: [], devLogin: DEV_LOGIN, robloxConfigured, discordConfigured });
   }
   const airlines = store.data.airlines
     .filter((a) => a.createdByUserId === req.user.id || a.ownerUserId === req.user.id)
     .map((a) => publicAirline(a, req.user));
-  res.json({ user: publicUser(req.user), airlines, following: followingCount(req.user.id) });
+  const pending = req.user.pendingRoblox && req.user.pendingRoblox.expiresAt > now()
+    ? { code: req.user.pendingRoblox.code, robloxUsername: req.user.pendingRoblox.robloxUsername, expiresAt: req.user.pendingRoblox.expiresAt }
+    : null;
+  res.json({
+    user: {
+      ...publicUser(req.user),
+      confirmed: Boolean(req.user.confirmed),
+      robloxUsername: req.user.robloxUsername || null,
+      hasDiscord: Boolean(req.user.discordId),
+      hasRoblox: Boolean(req.user.robloxUserId),
+    },
+    isAdmin: isAdmin(req.user),
+    pendingRoblox: pending,
+    airlines,
+    following: followingCount(req.user.id),
+    devLogin: DEV_LOGIN,
+  });
 });
 
 app.patch('/api/me', requireUser, (req, res) => {
@@ -430,6 +601,91 @@ app.patch('/api/me', requireUser, (req, res) => {
   res.json(publicUser(u));
 });
 
+// Step 1: look up the Roblox account and issue a one-time code to paste into its About section.
+app.post('/api/me/roblox/start', requireUser, async (req, res) => {
+  if (req.user.confirmed) return fail(res, 400, 'Your Roblox account is already confirmed');
+  if (!rateLimit(`rbx-start:${req.user.id}`, 6, 60 * 60 * 1000)) return fail(res, 429, 'Too many attempts. Try again later.');
+  const username = String(req.body?.username || '').trim();
+  if (!USERNAME_RE.test(username)) return fail(res, 400, 'Roblox usernames are 3–20 letters, numbers or underscores');
+
+  try {
+    const lookup = await fetch(roblox.usernamesUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ usernames: [username], excludeBannedUsers: false }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!lookup.ok) return fail(res, 502, 'Could not reach Roblox. Try again in a moment.');
+    const hit = (await lookup.json()).data?.[0];
+    if (!hit) return fail(res, 404, 'No Roblox account with that username');
+
+    const robloxUserId = String(hit.id);
+    const linked = store.data.users.find((u) => u.id !== req.user.id && u.confirmed && u.robloxUserId === robloxUserId);
+    if (linked) return fail(res, 409, 'That Roblox account is already confirmed on another Jumpseat account');
+
+    const code = randomCode();
+    req.user.pendingRoblox = { robloxUserId, robloxUsername: hit.name, code, expiresAt: new Date(Date.now() + CODE_TTL_MS).toISOString() };
+    store.save();
+    res.json({ code, robloxUsername: hit.name, expiresAt: req.user.pendingRoblox.expiresAt });
+  } catch (err) {
+    console.error('roblox lookup failed:', err.message);
+    return fail(res, 502, 'Could not reach Roblox. Try again in a moment.');
+  }
+});
+
+// Step 2: read the Roblox About text and confirm if the code is there.
+app.post('/api/me/roblox/check', requireUser, async (req, res) => {
+  const pending = req.user.pendingRoblox;
+  if (!pending || pending.expiresAt < now()) return fail(res, 400, 'Your code expired or was not started. Get a new code.');
+  if (!rateLimit(`rbx-check:${req.user.id}`, 20, 10 * 60 * 1000)) return fail(res, 429, 'Too many checks. Wait a few minutes.');
+
+  try {
+    const r = await fetch(`${roblox.userUrl}${encodeURIComponent(pending.robloxUserId)}`, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!r.ok) return fail(res, 502, 'Could not reach Roblox. Try again in a moment.');
+    const profile = await r.json();
+    if (!String(profile.description || '').includes(pending.code)) {
+      return fail(res, 400, 'Code not found in your About yet. Paste it, save your profile, then check again.');
+    }
+    const linked = store.data.users.find((u) => u.id !== req.user.id && u.confirmed && u.robloxUserId === pending.robloxUserId);
+    if (linked) return fail(res, 409, 'That Roblox account is already confirmed on another Jumpseat account');
+
+    Object.assign(req.user, {
+      confirmed: true,
+      confirmedAt: now(),
+      robloxUserId: pending.robloxUserId,
+      robloxUsername: profile.name || pending.robloxUsername,
+      pendingRoblox: null,
+    });
+    store.save();
+    res.json({ ok: true, confirmed: true, robloxUsername: req.user.robloxUsername });
+  } catch (err) {
+    console.error('roblox profile check failed:', err.message);
+    return fail(res, 502, 'Could not reach Roblox. Try again in a moment.');
+  }
+});
+
+app.post('/api/me/roblox/cancel', requireUser, (req, res) => {
+  req.user.pendingRoblox = null;
+  store.save();
+  res.json({ ok: true });
+});
+
+// Dev only: confirms without a Roblox lookup so the flow can be tested offline.
+app.post('/api/me/roblox/dev-confirm', requireUser, (req, res) => {
+  if (!DEV_LOGIN) return fail(res, 404, 'Not found');
+  Object.assign(req.user, {
+    confirmed: true,
+    confirmedAt: now(),
+    robloxUserId: devRobloxId(req.user.username),
+    robloxUsername: req.user.username,
+    pendingRoblox: null,
+  });
+  store.save();
+  res.json({ ok: true, confirmed: true });
+});
+
 // ---------- users ----------
 
 app.get('/api/users/:username', (req, res) => {
@@ -442,7 +698,7 @@ app.get('/api/users/:username', (req, res) => {
     .map((p) => publicPost(p, req.user));
   const airlines = store.data.airlines
     .filter((a) => a.verified && a.ownerUserId === u.id)
-    .map((a) => ({ slug: a.slug, name: a.name }));
+    .map((a) => ({ slug: a.slug, name: a.name, kind: a.kind || 'airline' }));
   res.json({
     ...publicUser(u),
     followers: followersOf('user', u.id),
@@ -552,8 +808,8 @@ app.post('/api/posts', requireUser, (req, res) => {
   let airline = null;
   if (airlineSlug) {
     airline = findAirline(airlineSlug);
-    if (!airline) return fail(res, 404, 'Airline not found');
-    if (!isOwner(req.user, airline)) return fail(res, 403, 'You can only post as an airline you own');
+    if (!airline) return fail(res, 404, 'Organisation not found');
+    if (!isOwner(req.user, airline)) return fail(res, 403, 'You can only post as an organisation you own');
   }
 
   const post = {
@@ -577,13 +833,17 @@ app.delete('/api/posts/:id', requireUser, (req, res) => {
   const post = findPost(req.params.id);
   if (!post) return fail(res, 404, 'Post not found');
   if (!canManagePost(req.user, post)) return fail(res, 403, 'You can only delete your own posts');
-  store.data.posts = store.data.posts.filter((p) => p.id !== post.id);
-  store.data.comments = store.data.comments.filter((c) => c.postId !== post.id);
-  store.data.likes = store.data.likes.filter((l) => l.postId !== post.id);
-  store.data.reports = store.data.reports.filter((r) => r.postId !== post.id);
+  removePost(post.id);
   store.save();
   res.json({ ok: true });
 });
+
+function removePost(postId) {
+  store.data.posts = store.data.posts.filter((p) => p.id !== postId);
+  store.data.comments = store.data.comments.filter((c) => c.postId !== postId);
+  store.data.likes = store.data.likes.filter((l) => l.postId !== postId);
+  store.data.reports = store.data.reports.filter((r) => r.postId !== postId);
+}
 
 app.post('/api/posts/:id/like', requireUser, (req, res) => {
   const post = findPost(req.params.id);
@@ -625,7 +885,7 @@ app.delete('/api/comments/:id', requireUser, (req, res) => {
   res.json({ ok: true });
 });
 
-// Three distinct reporters hide a post automatically, pending review.
+// Three distinct reporters hide a post automatically, pending review by an admin.
 app.post('/api/posts/:id/report', requireUser, (req, res) => {
   const post = findPost(req.params.id);
   if (!post || post.hidden) return fail(res, 404, 'Post not found');
@@ -675,7 +935,7 @@ app.get('/api/discover', (req, res) => {
   });
 });
 
-// ---------- airlines ----------
+// ---------- organisations (airlines, Roblox stores, other) ----------
 
 app.get('/api/airlines', (req, res) => {
   res.json(store.data.airlines.map((a) => publicAirline(a, req.user)));
@@ -683,7 +943,7 @@ app.get('/api/airlines', (req, res) => {
 
 app.get('/api/airlines/:slug', (req, res) => {
   const airline = findAirline(req.params.slug);
-  if (!airline) return fail(res, 404, 'Airline not found');
+  if (!airline) return fail(res, 404, 'Organisation not found');
   const jobs = store.data.jobs
     .filter((j) => j.airlineId === airline.id && isLive(j))
     .sort(byNewest)
@@ -697,16 +957,22 @@ app.get('/api/airlines/:slug', (req, res) => {
 });
 
 app.post('/api/airlines', requireUser, (req, res) => {
+  // Gate: an organisation needs a confirmed Roblox account first.
+  if (!req.user.confirmed) {
+    return fail(res, 403, 'Confirm your Roblox account before setting up an organisation', { code: 'confirm_required' });
+  }
   const listed = store.data.airlines.filter((a) => a.createdByUserId === req.user.id).length;
-  if (listed >= LIMITS.airlinesPerUser) return fail(res, 400, `You can list up to ${LIMITS.airlinesPerUser} airlines`);
+  if (listed >= LIMITS.orgsPerUser) return fail(res, 400, `You can list up to ${LIMITS.orgsPerUser} organisations`);
 
   const name = String(req.body?.name || '').trim();
+  const kind = String(req.body?.kind || 'airline');
   const robloxGroupId = String(req.body?.robloxGroupId || '').trim();
   const description = String(req.body?.description || '').trim();
   const discordWebhook = String(req.body?.discordWebhook || '').trim();
   const discordInvite = String(req.body?.discordInvite || '').trim();
 
-  if (name.length < 2 || name.length > 40) return fail(res, 400, 'Airline name must be 2–40 characters');
+  if (!KINDS[kind]) return fail(res, 400, 'Type must be airline, store or other');
+  if (name.length < 2 || name.length > 40) return fail(res, 400, 'Name must be 2–40 characters');
   if (!/^\d{1,12}$/.test(robloxGroupId)) return fail(res, 400, 'Roblox group ID must be numbers only');
   if (description.length > 500) return fail(res, 400, 'Description must be 500 characters or fewer');
   const webhookError = validateWebhook(discordWebhook);
@@ -717,7 +983,7 @@ app.post('/api/airlines', requireUser, (req, res) => {
     return fail(res, 409, 'That Roblox group is already listed');
   }
 
-  const base = name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'airline';
+  const base = name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'org';
   let slug = base;
   let n = 2;
   while (store.data.airlines.some((a) => a.slug === slug)) slug = `${base}-${n++}`;
@@ -726,6 +992,7 @@ app.post('/api/airlines', requireUser, (req, res) => {
     id: crypto.randomUUID(),
     slug,
     name,
+    kind,
     description,
     robloxGroupId,
     verified: false,
@@ -748,8 +1015,8 @@ app.post('/api/airlines', requireUser, (req, res) => {
 // Owner settings. Only the verified owner can change them.
 app.patch('/api/airlines/:slug', requireUser, (req, res) => {
   const airline = findAirline(req.params.slug);
-  if (!airline) return fail(res, 404, 'Airline not found');
-  if (!isOwner(req.user, airline)) return fail(res, 403, 'Only the verified owner can edit this airline');
+  if (!airline) return fail(res, 404, 'Organisation not found');
+  if (!isOwner(req.user, airline)) return fail(res, 403, 'Only the verified owner can edit this organisation');
 
   if (req.body?.description !== undefined) {
     const value = String(req.body.description).trim();
@@ -774,7 +1041,7 @@ app.patch('/api/airlines/:slug', requireUser, (req, res) => {
 
 app.post('/api/airlines/:slug/jobs', requireUser, (req, res) => {
   const airline = findAirline(req.params.slug);
-  if (!airline) return fail(res, 404, 'Airline not found');
+  if (!airline) return fail(res, 404, 'Organisation not found');
   if (!isOwner(req.user, airline)) return fail(res, 403, 'Only the verified owner can post roles');
   const { value, error } = validateJobFields(req.body);
   if (error) return fail(res, 400, error);
@@ -787,7 +1054,7 @@ app.post('/api/airlines/:slug/jobs', requireUser, (req, res) => {
 
 app.post('/api/airlines/:slug/jobs/:jobId/close', requireUser, (req, res) => {
   const airline = findAirline(req.params.slug);
-  if (!airline) return fail(res, 404, 'Airline not found');
+  if (!airline) return fail(res, 404, 'Organisation not found');
   if (!isOwner(req.user, airline)) return fail(res, 403, 'Only the verified owner can close roles');
   const job = store.data.jobs.find((j) => j.id === req.params.jobId && j.airlineId === airline.id);
   if (!job) return fail(res, 404, 'Job not found');
@@ -899,13 +1166,6 @@ const messagesIn = (convId) =>
   store.data.messages
     .filter((m) => m.conversationId === convId)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-
-function miniUser(id) {
-  const u = store.data.users.find((x) => x.id === id);
-  return u
-    ? { id: u.id, username: u.username, displayName: u.displayName || u.username }
-    : { id, username: 'unknown', displayName: 'unknown' };
-}
 
 function unreadFor(conv, userId) {
   const readAt = conv.readAt?.[userId] || '';
@@ -1085,6 +1345,69 @@ app.post('/api/users/:id/block', requireUser, (req, res) => {
   }
   store.save();
   res.json({ blocked });
+});
+
+// ---------- admin ----------
+
+app.get('/api/admin/reports', requireUser, requireAdmin, (req, res) => {
+  const byPost = new Map();
+  for (const r of store.data.reports) {
+    if (!r.postId) continue;
+    const entry = byPost.get(r.postId) || { reporters: new Set(), reasons: [] };
+    entry.reporters.add(r.reporterUserId);
+    entry.reasons.push(r.reason);
+    byPost.set(r.postId, entry);
+  }
+  const posts = [...byPost.entries()]
+    .map(([postId, entry]) => {
+      const post = findPost(postId);
+      return post
+        ? { post: publicPost(post, req.user), reportCount: entry.reporters.size, reasons: entry.reasons.slice(0, 5), hidden: post.hidden }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.reportCount - a.reportCount);
+
+  const conversations = store.data.reports
+    .filter((r) => r.conversationId)
+    .map((r) => ({ id: r.id, conversationId: r.conversationId, reason: r.reason, createdAt: r.createdAt, reporter: miniUser(r.reporterUserId) }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  res.json({ posts, conversations });
+});
+
+app.post('/api/admin/posts/:id/restore', requireUser, requireAdmin, (req, res) => {
+  const post = findPost(req.params.id);
+  if (!post) return fail(res, 404, 'Post not found');
+  post.hidden = false;
+  store.data.reports = store.data.reports.filter((r) => r.postId !== post.id);
+  store.save();
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/posts/:id/remove', requireUser, requireAdmin, (req, res) => {
+  const post = findPost(req.params.id);
+  if (!post) return fail(res, 404, 'Post not found');
+  removePost(post.id);
+  store.save();
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/users', requireUser, requireAdmin, (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const users = store.data.users
+    .filter((u) => !q || u.username.toLowerCase().includes(q) || (u.displayName || '').toLowerCase().includes(q))
+    .slice(0, 25)
+    .map((u) => ({ ...publicUser(u), id: u.id, verifiedMember: Boolean(u.verifiedMember), confirmed: Boolean(u.confirmed) }));
+  res.json(users);
+});
+
+app.post('/api/admin/users/:id/member', requireUser, requireAdmin, (req, res) => {
+  const target = store.data.users.find((u) => u.id === req.params.id);
+  if (!target) return fail(res, 404, 'User not found');
+  target.verifiedMember = Boolean(req.body?.verified);
+  store.save();
+  res.json({ ok: true, badges: badgesOf(target) });
 });
 
 // ---------- errors ----------
