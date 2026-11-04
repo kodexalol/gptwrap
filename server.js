@@ -15,9 +15,40 @@ const DEV_LOGIN = process.env.ALLOW_DEV_LOGIN === '1' && process.env.NODE_ENV !=
 // Comma-separated Roblox-style usernames that get admin tools, e.g. ADMIN_USERNAMES=alice,bob
 const ADMIN_USERNAMES = (process.env.ADMIN_USERNAMES || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 
-const ROLES = ['pilot', 'cabin-crew', 'ground'];
-const ROLE_LABELS = { pilot: 'Pilot', 'cabin-crew': 'Cabin Crew', ground: 'Ground Ops' };
-const KINDS = { airline: 'Airline', store: 'Roblox store', other: 'Organisation' };
+// Roles cover every kind of Roblox business. "group" drives the filters on the Jobs page.
+const ROLE_CATALOG = [
+  { key: 'pilot', label: 'Pilot', group: 'flight' },
+  { key: 'cabin-crew', label: 'Cabin crew', group: 'flight' },
+  { key: 'ground', label: 'Ground staff', group: 'flight' },
+  { key: 'barista', label: 'Barista', group: 'front' },
+  { key: 'server', label: 'Server', group: 'front' },
+  { key: 'host', label: 'Host', group: 'front' },
+  { key: 'front-desk', label: 'Front desk', group: 'front' },
+  { key: 'room-service', label: 'Room service', group: 'front' },
+  { key: 'lifeguard', label: 'Lifeguard', group: 'front' },
+  { key: 'cashier', label: 'Cashier', group: 'front' },
+  { key: 'sales', label: 'Sales assistant', group: 'front' },
+  { key: 'kitchen', label: 'Kitchen', group: 'back' },
+  { key: 'housekeeping', label: 'Housekeeping', group: 'back' },
+  { key: 'stock', label: 'Stock and supply', group: 'back' },
+  { key: 'builder', label: 'Builder and creative', group: 'back' },
+  { key: 'trainee', label: 'Trainee', group: 'training' },
+  { key: 'manager', label: 'Manager', group: 'management' },
+  { key: 'other', label: 'Other', group: 'other' },
+];
+const ROLES = ROLE_CATALOG.map((r) => r.key);
+const ROLE_LABELS = Object.fromEntries(ROLE_CATALOG.map((r) => [r.key, r.label]));
+const ROLE_GROUPS = [['front', 'Customer-facing'], ['back', 'Back of house'], ['flight', 'Flight'], ['training', 'Training'], ['management', 'Management']];
+const KINDS = { airline: 'Airline', cafe: 'Cafe', restaurant: 'Restaurant', hotel: 'Hotel', store: 'Store', other: 'Organisation' };
+// The roles most often posted for each kind. Shown first in the role picker; any catalog role is still allowed.
+const KIND_ROLES = {
+  airline: ['pilot', 'cabin-crew', 'ground', 'manager', 'other'],
+  cafe: ['barista', 'kitchen', 'server', 'trainee', 'manager', 'other'],
+  restaurant: ['kitchen', 'server', 'host', 'trainee', 'manager', 'other'],
+  hotel: ['front-desk', 'room-service', 'housekeeping', 'lifeguard', 'kitchen', 'manager', 'other'],
+  store: ['cashier', 'sales', 'stock', 'builder', 'manager', 'other'],
+  other: ['manager', 'trainee', 'other'],
+};
 const LIMITS = { postBody: 500, commentBody: 280, bio: 160, displayName: 40, reportReason: 200, orgsPerUser: 3 };
 const REPORT_HIDE_THRESHOLD = 3;
 const STATE_TTL_MS = 10 * 60 * 1000;
@@ -184,6 +215,7 @@ function publicAirline(a, viewer) {
     name: a.name,
     kind: a.kind || 'airline',
     kindLabel: KINDS[a.kind || 'airline'],
+    applyInstructions: a.applyInstructions || null,
     description: a.description,
     verified: a.verified,
     sample: Boolean(a.sample),
@@ -204,10 +236,18 @@ function publicJob(job) {
     title: job.title,
     role: job.role,
     roleLabel: ROLE_LABELS[job.role],
+    roleGroup: ROLE_CATALOG.find((r) => r.key === job.role)?.group || 'other',
     description: job.description,
     open: job.open,
     createdAt: job.createdAt,
-    airline: airline ? { slug: airline.slug, name: airline.name, verified: airline.verified, kind: airline.kind || 'airline' } : null,
+    airline: airline ? {
+      slug: airline.slug,
+      name: airline.name,
+      verified: airline.verified,
+      kind: airline.kind || 'airline',
+      robloxGroupId: airline.robloxGroupId,
+      applyInstructions: airline.applyInstructions || null,
+    } : null,
   };
 }
 
@@ -972,8 +1012,10 @@ app.post('/api/airlines', requireUser, (req, res) => {
   const description = String(req.body?.description || '').trim();
   const discordWebhook = String(req.body?.discordWebhook || '').trim();
   const discordInvite = String(req.body?.discordInvite || '').trim();
+  const applyInstructions = String(req.body?.applyInstructions || '').trim();
 
-  if (!KINDS[kind]) return fail(res, 400, 'Type must be airline, store or other');
+  if (!KINDS[kind]) return fail(res, 400, `Type must be one of: ${Object.keys(KINDS).join(', ')}`);
+  if (applyInstructions.length > 400) return fail(res, 400, 'How to apply must be 400 characters or fewer');
   if (name.length < 2 || name.length > 40) return fail(res, 400, 'Name must be 2–40 characters');
   if (!/^\d{1,12}$/.test(robloxGroupId)) return fail(res, 400, 'Roblox group ID must be numbers only');
   if (description.length > 500) return fail(res, 400, 'Description must be 500 characters or fewer');
@@ -1003,6 +1045,7 @@ app.post('/api/airlines', requireUser, (req, res) => {
     createdByUserId: req.user.id,
     discordInvite: discordInvite || null,
     discordWebhook: discordWebhook || null,
+    applyInstructions: applyInstructions || null,
     sample: false,
     createdAt: now(),
   };
@@ -1037,6 +1080,11 @@ app.patch('/api/airlines/:slug', requireUser, (req, res) => {
     if (error) return fail(res, 400, error);
     airline.discordWebhook = value || null;
   }
+  if (req.body?.applyInstructions !== undefined) {
+    const value = String(req.body.applyInstructions).trim();
+    if (value.length > 400) return fail(res, 400, 'How to apply must be 400 characters or fewer');
+    airline.applyInstructions = value || null;
+  }
   store.save();
   res.json(publicAirline(airline, req.user));
 });
@@ -1069,11 +1117,13 @@ app.post('/api/airlines/:slug/jobs/:jobId/close', requireUser, (req, res) => {
 
 app.get('/api/jobs', (req, res) => {
   const role = String(req.query.role || '');
+  const group = String(req.query.group || '');
   const q = String(req.query.q || '').trim().toLowerCase();
   const jobs = store.data.jobs
     .filter(isLive)
     .map(publicJob)
     .filter((j) => !role || j.role === role)
+    .filter((j) => !group || j.roleGroup === group)
     .filter((j) => !q || `${j.title} ${j.airline?.name || ''}`.toLowerCase().includes(q))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   res.json(jobs);
@@ -1549,6 +1599,16 @@ app.post('/api/admin/orgs/:slug/remove', requireUser, requireAdmin, (req, res) =
   audit(req.user, 'org.remove', airline.slug);
   store.save();
   res.json({ ok: true });
+});
+
+// ---------- meta: the kinds and roles the UI offers ----------
+
+app.get('/api/meta', (req, res) => {
+  res.json({
+    kinds: Object.entries(KINDS).map(([key, label]) => ({ key, label, roles: KIND_ROLES[key] || [] })),
+    roles: ROLE_CATALOG.map((r) => ({ ...r })),
+    roleGroups: ROLE_GROUPS.map(([key, label]) => ({ key, label })),
+  });
 });
 
 // ---------- errors ----------

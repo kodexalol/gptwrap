@@ -1,8 +1,8 @@
 # Jumpseat
 
-The social and job platform for Roblox aviation. Follow airlines, post and discover what crews are up to, and apply to open roles, all in one place. Applications are forwarded to the airline's Discord.
+The social and job platform for Roblox businesses: airlines, cafes, restaurants, hotels, stores and other groups. Follow them, see what their crews post, and apply to open roles, all in one place. Applications are forwarded to the business's Discord.
 
-Jumpseat is an independent fan project. It is not affiliated with or endorsed by Roblox Corporation or any airline.
+Jumpseat is an independent fan project. It is not affiliated with or endorsed by Roblox Corporation or any business listed on it.
 
 ## What's in it
 
@@ -12,7 +12,7 @@ Jumpseat is an independent fan project. It is not affiliated with or endorsed by
 - **Direct messages.** Message requests, one-message-until-accepted, blocking, declining, and reporting. Thread view updates every 3 seconds.
 - **Video.** Post a direct `.mp4` or `.webm` link, or a YouTube or Vimeo link. Embeds use privacy-enhanced hosts (youtube-nocookie.com). Jumpseat does not host or upload video.
 - **Motion.** Views cross-fade where supported, content rises in, likes pop, and loading uses skeleton placeholders. All motion is disabled when the OS asks for reduced motion.
-- **Discover.** Search across airlines, people, posts, and roles. Browse popular tags.
+- **Discover.** Search across organisations, people, posts, and roles. Browse popular tags.
 - **Airlines.** Public profiles with followers, posts, and open roles. Verified airlines can post as the airline.
 - **Jobs.** Filterable open roles with a one-step application.
 - **Profiles.** Bio, display name, follower counts, and the airlines a person runs.
@@ -48,7 +48,7 @@ Register the redirect URI in your Open Cloud OAuth app exactly as configured her
 
 1. **Sign in** with Discord (or Roblox, if configured). Sessions are random tokens stored as hashes in an HttpOnly cookie.
 2. **Confirm your Roblox account** (the green house). Enter your Roblox username, and Jumpseat gives you a one-time code like `JS-7K2M9Q`. Paste it into the About section of your Roblox profile, save, and press Check. The server reads your public Roblox profile and confirms the link. A Roblox account can only be confirmed on one Jumpseat account. Codes expire after 24 hours.
-3. **Set up an organisation** (airline, Roblox store, or other). This needs a confirmed account, and the server refuses it otherwise (`confirm_required`). Anyone confirmed can set up up to three.
+3. **Set up an organisation** (airline, cafe, restaurant, hotel, store, or other). This needs a confirmed account, and the server refuses it otherwise (`confirm_required`). Anyone confirmed can set up up to three.
 4. **Verify the organisation** (the blue check). Sign in with Roblox as the account that owns the group. The server checks that you are confirmed, that you are the group owner, and that the Roblox account matches your confirmed one.
 5. **Owners** post as the organisation, post and close roles, and edit settings from its page.
 
@@ -100,11 +100,12 @@ All routes are under `/api` and return JSON. Writes need a signed-in session.
 | GET | `/api/discover?q=` | Airlines, people, posts, and roles that match |
 | GET | `/api/airlines` | Airline directory |
 | GET | `/api/airlines/:slug` | Airline with its roles and posts |
-| POST | `/api/airlines` | `{ name, robloxGroupId, description?, discordInvite?, discordWebhook? }` |
-| PATCH | `/api/airlines/:slug` | Owner only. `{ description?, discordInvite?, discordWebhook? }` |
+| POST | `/api/airlines` | `{ name, kind, robloxGroupId, description?, discordInvite?, discordWebhook?, applyInstructions? }`. `kind` is `airline`, `cafe`, `restaurant`, `hotel`, `store` or `other`. `applyInstructions` is a how-to-apply note of up to 400 characters |
+| PATCH | `/api/airlines/:slug` | Owner only. `{ description?, discordInvite?, discordWebhook?, applyInstructions? }` |
 | POST | `/api/airlines/:slug/jobs` | Owner only. `{ title, role, description }` |
 | POST | `/api/airlines/:slug/jobs/:jobId/close` | Owner only |
-| GET | `/api/jobs?role=&q=` | Open roles from verified airlines |
+| GET | `/api/jobs?group=&role=&q=` | Open roles from verified organisations. `group` is `front`, `back`, `flight`, `training` or `management` |
+| GET | `/api/meta` | The organisation kinds, role catalog and role groups the UI offers |
 | GET | `/api/jobs/:id` | One role |
 | POST | `/api/jobs/:id/applications` | `{ robloxUsername, message? }`. Forwarded to Discord if a webhook is set |
 | GET | `/api/conversations` | Your inbox and requests, with unread counts |
