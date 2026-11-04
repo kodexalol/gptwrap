@@ -103,6 +103,7 @@ function seed() {
     conversations: [],
     messages: [],
     blocks: [],
+    audit: [],
   };
 }
 

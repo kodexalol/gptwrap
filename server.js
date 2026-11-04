@@ -64,6 +64,7 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '16kb' }));
 app.use((req, res, next) => {
   req.user = auth.userFromRequest(store, req);
+  if (req.user) touchPresence(req.user);
   next();
 });
 app.use(express.static(path.join(__dirname, 'public')));
@@ -581,6 +582,7 @@ app.get('/api/me', (req, res) => {
     pendingRoblox: pending,
     airlines,
     following: followingCount(req.user.id),
+    linkAllowlist: req.user.linkAllowlist || [],
     devLogin: DEV_LOGIN,
   });
 });
@@ -1254,7 +1256,9 @@ app.get('/api/conversations/:id', requireUser, (req, res) => {
   const conv = findConversationFor(req.params.id, req.user);
   if (!conv || conv.status === 'declined') return fail(res, 404, 'Conversation not found');
 
-  const other = miniUser(otherParticipant(conv, req.user.id));
+  const otherUser = store.data.users.find((u) => u.id === otherParticipant(conv, req.user.id));
+  // Presence is shown only inside a conversation the viewer is part of.
+  const other = { ...miniUser(otherParticipant(conv, req.user.id)), online: isOnline(otherUser) };
   const state = sendState(conv, req.user);
   const messages = messagesIn(conv.id)
     .slice(-200)
@@ -1380,6 +1384,7 @@ app.post('/api/admin/posts/:id/restore', requireUser, requireAdmin, (req, res) =
   const post = findPost(req.params.id);
   if (!post) return fail(res, 404, 'Post not found');
   post.hidden = false;
+  audit(req.user, 'post.restore', post.id);
   store.data.reports = store.data.reports.filter((r) => r.postId !== post.id);
   store.save();
   res.json({ ok: true });
@@ -1389,6 +1394,7 @@ app.post('/api/admin/posts/:id/remove', requireUser, requireAdmin, (req, res) =>
   const post = findPost(req.params.id);
   if (!post) return fail(res, 404, 'Post not found');
   removePost(post.id);
+  audit(req.user, 'post.remove', post.id);
   store.save();
   res.json({ ok: true });
 });
@@ -1406,8 +1412,143 @@ app.post('/api/admin/users/:id/member', requireUser, requireAdmin, (req, res) =>
   const target = store.data.users.find((u) => u.id === req.params.id);
   if (!target) return fail(res, 404, 'User not found');
   target.verifiedMember = Boolean(req.body?.verified);
+  audit(req.user, `member.${target.verifiedMember ? 'grant' : 'revoke'}`, target.username);
   store.save();
   res.json({ ok: true, badges: badgesOf(target) });
+});
+
+// ---------- presence ----------
+
+const ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+// Records when a user was last seen. Writes at most once a minute per user.
+function touchPresence(user) {
+  if (Date.now() - Date.parse(user.lastSeenAt || 0) < 60 * 1000) return;
+  user.lastSeenAt = now();
+  store.save();
+}
+
+function isOnline(user) {
+  return Boolean(user && user.lastSeenAt) && Date.now() - Date.parse(user.lastSeenAt) < ONLINE_WINDOW_MS;
+}
+
+// ---------- link allowlist ----------
+//
+// Links in posts, comments and messages are never opened directly. Clicking one asks first.
+// A user can allow a host (youtube.com) or a whole kind of link (video). Entries are stored per user.
+
+const LINK_SCOPES = ['domain', 'kind'];
+const LINK_KINDS = ['video', 'social', 'chat', 'roblox', 'other'];
+const HOST_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
+function parseAllowEntry(body) {
+  const scope = String(body?.scope || '');
+  const value = String(body?.value || '').trim().toLowerCase();
+  if (!LINK_SCOPES.includes(scope)) return { error: 'scope must be domain or kind' };
+  if (scope === 'kind' && !LINK_KINDS.includes(value)) return { error: 'Unknown link kind' };
+  if (scope === 'domain' && !HOST_RE.test(value)) return { error: 'Enter a domain like youtube.com' };
+  return { entry: { scope, value } };
+}
+
+app.get('/api/me/link-allowlist', requireUser, (req, res) => {
+  res.json(req.user.linkAllowlist || []);
+});
+
+app.post('/api/me/link-allowlist', requireUser, (req, res) => {
+  const { entry, error } = parseAllowEntry(req.body);
+  if (error) return fail(res, 400, error);
+  req.user.linkAllowlist = req.user.linkAllowlist || [];
+  if (!req.user.linkAllowlist.some((e) => e.scope === entry.scope && e.value === entry.value)) {
+    req.user.linkAllowlist.push({ ...entry, createdAt: now() });
+    store.save();
+  }
+  res.json(req.user.linkAllowlist);
+});
+
+app.delete('/api/me/link-allowlist', requireUser, (req, res) => {
+  const { entry, error } = parseAllowEntry(req.body);
+  if (error) return fail(res, 400, error);
+  req.user.linkAllowlist = (req.user.linkAllowlist || []).filter((e) => !(e.scope === entry.scope && e.value === entry.value));
+  store.save();
+  res.json(req.user.linkAllowlist);
+});
+
+// ---------- admin manager ----------
+
+// Every admin action is written to an audit log, so admins can see what was done and by whom.
+function audit(actor, action, target) {
+  store.data.audit = store.data.audit || [];
+  store.data.audit.push({
+    id: crypto.randomUUID(),
+    actorUserId: actor.id,
+    actor: actor.username,
+    action,
+    target: String(target || ''),
+    createdAt: now(),
+  });
+  if (store.data.audit.length > 1000) store.data.audit.splice(0, store.data.audit.length - 1000);
+}
+
+const usernameOf = (id) => {
+  const u = store.data.users.find((x) => x.id === id);
+  return u ? u.username : null;
+};
+
+app.get('/api/admin/overview', requireUser, requireAdmin, (req, res) => {
+  const users = store.data.users;
+  const reportedPostIds = new Set(store.data.reports.filter((r) => r.postId).map((r) => r.postId));
+  res.json({
+    counts: {
+      users: users.length,
+      online: users.filter(isOnline).length,
+      confirmed: users.filter((u) => u.confirmed).length,
+      members: users.filter((u) => u.verifiedMember).length,
+      orgs: store.data.airlines.length,
+      verifiedOrgs: store.data.airlines.filter((a) => a.verified).length,
+      openRoles: store.data.jobs.filter((j) => j.open).length,
+      posts: store.data.posts.length,
+      hiddenPosts: store.data.posts.filter((p) => p.hidden).length,
+      reportedPosts: reportedPostIds.size,
+      conversationReports: store.data.reports.filter((r) => r.conversationId).length,
+      conversations: store.data.conversations.length,
+    },
+    admins: ADMIN_USERNAMES,
+    audit: (store.data.audit || []).slice(-25).reverse(),
+  });
+});
+
+app.get('/api/admin/orgs', requireUser, requireAdmin, (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase();
+  res.json(store.data.airlines
+    .filter((a) => !q || a.name.toLowerCase().includes(q) || a.slug.includes(q))
+    .map((a) => ({
+      ...publicAirline(a, req.user),
+      ownerUsername: usernameOf(a.ownerUserId),
+      createdByUsername: usernameOf(a.createdByUserId),
+      openRoles: store.data.jobs.filter((j) => j.airlineId === a.id && j.open).length,
+      posts: store.data.posts.filter((p) => p.airlineId === a.id).length,
+    })));
+});
+
+app.post('/api/admin/orgs/:slug/unverify', requireUser, requireAdmin, (req, res) => {
+  const airline = findAirline(req.params.slug);
+  if (!airline) return fail(res, 404, 'Organisation not found');
+  airline.verified = false;
+  airline.ownerUserId = null;
+  audit(req.user, 'org.unverify', airline.slug);
+  store.save();
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/orgs/:slug/remove', requireUser, requireAdmin, (req, res) => {
+  const airline = findAirline(req.params.slug);
+  if (!airline) return fail(res, 404, 'Organisation not found');
+  store.data.posts.filter((p) => p.airlineId === airline.id).forEach((p) => removePost(p.id));
+  store.data.jobs = store.data.jobs.filter((j) => j.airlineId !== airline.id);
+  store.data.airlines = store.data.airlines.filter((a) => a.id !== airline.id);
+  audit(req.user, 'org.remove', airline.slug);
+  store.save();
+  res.json({ ok: true });
 });
 
 // ---------- errors ----------

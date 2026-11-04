@@ -17,6 +17,116 @@ const esc = (value) =>
 const linkify = (text) =>
   esc(text).replace(/#([A-Za-z0-9_]{2,30})/g, (_, tag) => `<a class="tag-link" href="#/tag/${tag.toLowerCase()}">#${tag}</a>`);
 
+// Links. Only https links are recognised. A link never opens straight away: it asks first,
+// unless the host (or its kind, like video) is on the user's allowlist.
+const URL_RE = /https:\/\/[^\s<>"']+/g;
+const LINK_KIND_HOSTS = {
+  video: ['youtube.com', 'youtu.be', 'vimeo.com', 'twitch.tv', 'tiktok.com'],
+  social: ['x.com', 'twitter.com', 'instagram.com', 'facebook.com', 'reddit.com', 'bsky.app'],
+  chat: ['discord.com', 'discord.gg', 'discordapp.com'],
+  roblox: ['roblox.com', 'rbxcdn.com'],
+};
+const LINK_KIND_LABELS = { video: 'Video', social: 'Social', chat: 'Chat', roblox: 'Roblox', other: 'Other' };
+const hostOf = (url) => {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; }
+};
+const kindOf = (host) =>
+  Object.keys(LINK_KIND_HOSTS).find((k) => LINK_KIND_HOSTS[k].some((d) => host === d || host.endsWith(`.${d}`))) || 'other';
+const cleanUrl = (u) => u.replace(/[).,!?;:]+$/, '');
+const urlsIn = (text) => [...new Set([...String(text ?? '').matchAll(URL_RE)].map((m) => cleanUrl(m[0])))].filter((u) => hostOf(u));
+
+function isAllowed(url) {
+  const host = hostOf(url);
+  const kind = kindOf(host);
+  return (me.linkAllowlist || []).some((e) =>
+    (e.scope === 'domain' && (host === e.value || host.endsWith(`.${e.value}`))) || (e.scope === 'kind' && e.value === kind));
+}
+
+// Text with hashtags, and each link shown as a button that asks before opening.
+function richText(text) {
+  const raw = String(text ?? '');
+  let out = '';
+  let last = 0;
+  for (const m of raw.matchAll(URL_RE)) {
+    const url = cleanUrl(m[0]);
+    if (!hostOf(url)) continue;
+    out += linkify(raw.slice(last, m.index));
+    out += `<button class="ext-link" type="button" data-action="open-link" data-url="${esc(url)}">${esc(url.replace(/^https:\/\//, ''))}</button>`;
+    last = m.index + url.length;
+  }
+  return out + linkify(raw.slice(last));
+}
+
+// One card per distinct link, shown under the text.
+function linkCards(text) {
+  const urls = urlsIn(text);
+  if (!urls.length) return '';
+  return `<div class="link-cards">${urls.map((url) => {
+    const parsed = new URL(url);
+    const host = hostOf(url);
+    const kind = kindOf(host);
+    const path = parsed.pathname.length > 1 ? parsed.pathname.slice(0, 60) : '';
+    return `
+      <button class="link-card" type="button" data-action="open-link" data-url="${esc(url)}">
+        <span class="link-kind">${LINK_KIND_LABELS[kind]}</span>
+        <span class="link-host">${esc(host)}</span>
+        <span class="link-path">${esc(path)}</span>
+        <span class="link-cta">${isAllowed(url) ? 'Opens directly' : 'Ask first'} ${icon('external', { size: 14 })}</span>
+      </button>`;
+  }).join('')}</div>`;
+}
+
+// The popup. Offers open once, or allow the host, or allow the whole kind of link.
+function openLinkDialog(url) {
+  const host = hostOf(url);
+  const kind = kindOf(host);
+  document.querySelector('.sheet-backdrop')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-backdrop';
+  wrap.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="link-title">
+      <p class="kicker">Leaving Jumpseat</p>
+      <h2 id="link-title">Open this link?</h2>
+      <p class="muted">This goes to <strong>${esc(host)}</strong>, outside Jumpseat. We can’t see what is there.</p>
+      <div class="link-preview"><span class="link-kind">${LINK_KIND_LABELS[kind]}</span><code>${esc(url)}</code></div>
+      <div class="sheet-actions">
+        <button class="btn primary" data-link="open">Open once</button>
+        ${me.user ? `
+          <button class="btn secondary" data-link="domain">Always allow ${esc(host)}</button>
+          <button class="btn secondary" data-link="kind">Allow all ${esc(LINK_KIND_LABELS[kind].toLowerCase())} links</button>` : ''}
+        <button class="btn ghost" data-link="cancel">Cancel</button>
+      </div>
+      <p class="form-status" data-status></p>
+    </div>`;
+  document.body.appendChild(wrap);
+
+  const close = () => {
+    wrap.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap) return close();
+    const btn = e.target.closest('[data-link]');
+    if (!btn) return;
+    const choice = btn.dataset.link;
+    if (choice === 'cancel') return close();
+    try {
+      if (choice === 'domain' || choice === 'kind') {
+        me.linkAllowlist = await send('POST', '/api/me/link-allowlist', { scope: choice, value: choice === 'domain' ? host : kind });
+        toast(choice === 'domain' ? `Allowed ${host}` : `Allowed ${LINK_KIND_LABELS[kind].toLowerCase()} links`);
+      }
+      window.open(url, '_blank', 'noopener,noreferrer');
+      close();
+    } catch (err) {
+      wrap.querySelector('[data-status]').textContent = err.message;
+    }
+  });
+  wrap.querySelector('[data-link="open"]').focus();
+}
+
 const loading = '<div class="skeleton" aria-busy="true" aria-label="Loading"><span></span><span></span><span></span></div>';
 const errorBox = (message) => `<p class="error-box">${esc(message)}</p>`;
 const initial = (name) => esc(String(name || '?').trim().charAt(0).toUpperCase() || '?');
@@ -136,12 +246,13 @@ let homeTab = 'following';
 let airlineTab = 'posts';
 let airlineTabFor = null;
 let messagesTab = 'inbox';
-let adminTab = 'reports';
+let adminTab = 'overview';
 let jobFilter = { role: '', q: '' };
 let unreadTotal = 0;
 let threadPoll = null;
 let renderedMessageIds = new Set();
 let threadStateKey = null;
+let threadPresenceKey = null;
 
 const NAV = [
   { href: '#/', icon: 'home', label: 'Home', match: /^#\/?$/ },
@@ -260,7 +371,8 @@ function postCard(p) {
           <span class="post-handle">${esc(handle)} · ${timeAgo(p.createdAt)}</span>
           ${p.canDelete ? `<button class="icon-btn quiet" data-action="delete" data-id="${esc(p.id)}" aria-label="Delete post">${icon('trash', { size: 16 })}</button>` : ''}
         </header>
-        <div class="post-body">${linkify(p.body)}</div>
+        <div class="post-body">${richText(p.body)}</div>
+        ${linkCards(p.body)}
         ${mediaHtml(p)}
         <footer class="post-actions">
           <button class="act${p.likedByMe ? ' on' : ''}" data-action="like" data-id="${esc(p.id)}" aria-pressed="${p.likedByMe}" aria-label="Like">${icon('heart', { filled: p.likedByMe, size: 18 })}<span>${p.likeCount}</span></button>
@@ -325,7 +437,7 @@ function commentItem(c) {
           <strong>${nameLine(c.author.name, { badges: c.author.badges })}</strong><span class="post-handle">@${esc(c.author.username)} · ${timeAgo(c.createdAt)}</span>
           ${c.mine ? `<button class="icon-btn quiet" data-action="delete-comment" data-id="${esc(c.id)}" aria-label="Delete comment">${icon('trash', { size: 16 })}</button>` : ''}
         </div>
-        <p>${linkify(c.body)}</p>
+        <p>${richText(c.body)}</p>
       </div>
     </div>`;
 }
@@ -680,7 +792,7 @@ async function renderMessages() {
 function bubbleHtml(m, animate) {
   return `
     <div class="bubble-row${m.mine ? ' mine' : ''}${animate ? ' new' : ''}" data-msg="${esc(m.id)}">
-      <div class="bubble">${esc(m.body)}</div>
+      <div class="bubble">${richText(m.body)}</div>
       <span class="bubble-time">${clock(m.createdAt)}</span>
     </div>`;
 }
@@ -745,8 +857,30 @@ function threadHeader(t) {
     </div>`;
 }
 
+// iOS-style conversation header: a large avatar with a status ring (green online, grey offline),
+// and the name in a pill underneath.
+function iosThreadHead(t) {
+  const blocked = t.reason === 'you-blocked';
+  const online = Boolean(t.other.online);
+  const name = t.other.displayName;
+  return `
+    <header class="ios-head">
+      <a class="ios-avatar-link" href="#/u/${esc(t.other.username)}" aria-label="View ${esc(name)}">
+        <span class="status-ring ${online ? 'online' : 'offline'}" role="img" aria-label="${online ? 'Online' : 'Offline'}">${avatar(name, { size: 'lg' })}</span>
+      </a>
+      <a class="ios-pill" href="#/u/${esc(t.other.username)}">
+        <span class="ios-name">${nameLine(name, { badges: t.other.badges })}</span>
+        <span class="ios-status${online ? ' online' : ''}">${online ? 'Online' : 'Offline'}</span>
+      </a>
+      <div class="ios-actions">
+        <button class="btn secondary small" data-action="${blocked ? 'unblock-dm' : 'block-dm'}" data-id="${esc(t.other.id)}">${icon('block', { size: 15 })} ${blocked ? 'Unblock' : 'Block'}</button>
+        <button class="icon-btn" data-action="report-dm" data-id="${esc(t.id)}" aria-label="Report conversation">${icon('flag', { size: 18 })}</button>
+      </div>
+    </header>`;
+}
+
 function renderThreadChrome(t) {
-  $('#thread-head').innerHTML = threadHeader(t);
+  $('#thread-head').innerHTML = iosThreadHead(t);
   $('#thread-foot').innerHTML = threadFooter(t);
   bindForm('[data-form="dm"]', (data) => send('POST', `/api/conversations/${encodeURIComponent(t.id)}/messages`, { body: data.body }), (msg, form) => {
     form.reset();
@@ -779,6 +913,12 @@ async function loadThread(id, initial) {
     return;
   }
   // Rebuild the header and footer only when the conversation state changes. Otherwise typed text survives.
+  // Presence can change without the conversation changing. Refresh just the header then.
+  const presence = t.other.online ? 'on' : 'off';
+  if (initial || presence !== threadPresenceKey) {
+    threadPresenceKey = presence;
+    $('#thread-head').innerHTML = iosThreadHead(t);
+  }
   const key = `${t.status}|${t.reason}|${t.canSend}`;
   if (initial || key !== threadStateKey) {
     threadStateKey = key;
@@ -1209,6 +1349,17 @@ function renderMe() {
       </form>
     </section>
 
+    <div class="section-head"><h2>Allowed links</h2></div>
+    <p class="muted small">Links you allow open straight away. Anything else asks first.</p>
+    ${(me.linkAllowlist || []).length ? `<div class="list">${me.linkAllowlist.map((e) => `
+        <div class="row">
+          <div class="row-main">
+            <div class="row-title">${e.scope === 'kind' ? `All ${esc(LINK_KIND_LABELS[e.value] || e.value)} links` : esc(e.value)}</div>
+            <div class="row-sub">${e.scope === 'kind' ? 'Kind' : 'Domain'}</div>
+          </div>
+          <button class="btn secondary small" data-action="unallow" data-scope="${esc(e.scope)}" data-value="${esc(e.value)}">Remove</button>
+        </div>`).join('')}</div>` : '<p class="muted">No allowed links yet.</p>'}
+
     <div class="section-head"><h2>Your organisations</h2><a class="btn secondary small" href="#/claim">${icon('plus', { size: 16 })} Set up</a></div>
     ${listings}`;
 
@@ -1232,9 +1383,11 @@ async function renderAdmin() {
   }
   app.innerHTML = `
     ${pageHead('Admin tools', { back: true })}
-    <div class="toolbar" style="padding-top:16px">${seg('admin', [['reports', 'Reports'], ['members', 'Members']], adminTab)}</div>
+    <div class="toolbar" style="padding-top:16px">${seg('admin', [['overview', 'Overview'], ['reports', 'Reports'], ['members', 'Members'], ['orgs', 'Organisations']], adminTab)}</div>
     <div id="admin-pane">${loading}</div>`;
-  if (adminTab === 'reports') loadAdminReports();
+  if (adminTab === 'overview') loadAdminOverview();
+  else if (adminTab === 'reports') loadAdminReports();
+  else if (adminTab === 'orgs') loadAdminOrgs('');
   else loadAdminMembers('');
 }
 
@@ -1299,6 +1452,65 @@ async function loadAdminMembers(q) {
       : '<p class="empty">No matching members.</p>';
   } catch (err) {
     $('#member-list').innerHTML = errorBox(err.message);
+  }
+}
+
+async function loadAdminOverview() {
+  const pane = $('#admin-pane');
+  try {
+    const { counts: c, admins, audit } = await api('/api/admin/overview');
+    const tiles = [
+      ['Members', c.users], ['Online now', c.online], ['Confirmed', c.confirmed], ['Gold checks', c.members],
+      ['Verified orgs', `${c.verifiedOrgs} / ${c.orgs}`], ['Open roles', c.openRoles],
+      ['Posts', c.posts], ['Hidden posts', c.hiddenPosts], ['Reported posts', c.reportedPosts], ['Conversation reports', c.conversationReports],
+    ].map(([label, value]) => `<div class="stat"><strong>${esc(value)}</strong><span class="muted">${esc(label)}</span></div>`).join('');
+    pane.innerHTML = `
+      <div class="stat-grid">${tiles}</div>
+      <div class="section-head"><h2>Admins</h2></div>
+      <p class="muted small">Set in server configuration (ADMIN_USERNAMES): ${admins.length ? admins.map((a) => `@${esc(a)}`).join(', ') : 'none'}</p>
+      <div class="section-head"><h2>Recent admin actions</h2></div>
+      <div class="list">${audit.length
+        ? audit.map((a) => `
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">${esc(a.action)} <span class="handle-sm">${esc(a.target)}</span></div>
+                <div class="row-sub">by @${esc(a.actor)} · ${timeAgo(a.createdAt)}</div>
+              </div>
+            </div>`).join('')
+        : '<p class="empty">No admin actions yet.</p>'}</div>`;
+  } catch (err) {
+    pane.innerHTML = errorBox(err.message);
+  }
+}
+
+async function loadAdminOrgs(q) {
+  const pane = $('#admin-pane');
+  pane.innerHTML = `
+    <div class="search" style="margin-top:16px">${icon('search', { size: 18 })}<input id="org-q" type="search" placeholder="Find an organisation" value="${esc(q)}" aria-label="Find organisation"></div>
+    <div id="org-list" class="list" style="margin-top:8px">${loading}</div>`;
+  let timer;
+  $('#org-q').addEventListener('input', (e) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => loadAdminOrgs(e.target.value.trim()), 250);
+  });
+  try {
+    const orgs = await api(`/api/admin/orgs?q=${encodeURIComponent(q)}`);
+    $('#org-list').innerHTML = orgs.length
+      ? orgs.map((o) => `
+          <div class="row">
+            ${avatar(o.name, { airline: true })}
+            <div class="row-main">
+              <div class="row-title">${esc(o.name)}${o.verified ? VERIFIED : ''}<span class="kind">${esc(o.kindLabel)}</span></div>
+              <div class="row-sub">Owner ${o.ownerUsername ? `@${esc(o.ownerUsername)}` : 'none'} · created by ${o.createdByUsername ? `@${esc(o.createdByUsername)}` : 'unknown'} · ${o.openRoles} roles · ${o.posts} posts</div>
+            </div>
+            <div class="row-actions">
+              ${o.verified ? `<button class="btn secondary small" data-action="admin-unverify" data-id="${esc(o.slug)}">Unverify</button>` : ''}
+              <button class="btn danger small" data-action="admin-remove-org" data-id="${esc(o.slug)}">Remove</button>
+            </div>
+          </div>`).join('')
+      : '<p class="empty">No organisations match.</p>';
+  } catch (err) {
+    $('#org-list').innerHTML = errorBox(err.message);
   }
 }
 
@@ -1415,6 +1627,14 @@ app.addEventListener('click', async (e) => {
       if (!confirm('Report this conversation to the moderators? The other person will not be told.')) return;
       await send('POST', `/api/conversations/${id}/report`, { reason: 'reported conversation' });
       toast('Report sent');
+    } else if (action === 'open-link') {
+      const url = btn.dataset.url;
+      if (isAllowed(url)) window.open(url, '_blank', 'noopener,noreferrer');
+      else openLinkDialog(url);
+    } else if (action === 'unallow') {
+      me.linkAllowlist = await send('DELETE', '/api/me/link-allowlist', { scope: btn.dataset.scope, value: btn.dataset.value });
+      toast('Removed');
+      renderMe();
     } else if (action === 'copy-code') {
       await navigator.clipboard.writeText(btn.dataset.code);
       toast('Code copied');
@@ -1450,6 +1670,16 @@ app.addEventListener('click', async (e) => {
       const r = await send('POST', `/api/admin/users/${id}/member`, { verified: btn.dataset.value === '1' });
       toast(r.badges.includes('member') ? 'Gold check granted' : 'Gold check removed');
       loadAdminMembers($('#member-q')?.value.trim() || '');
+    } else if (action === 'admin-unverify') {
+      if (!confirm('Remove the verified check from this organisation? Its owner loses posting rights until they verify again.')) return;
+      await send('POST', `/api/admin/orgs/${id}/unverify`);
+      toast('Verification removed');
+      loadAdminOrgs($('#org-q')?.value.trim() || '');
+    } else if (action === 'admin-remove-org') {
+      if (!confirm('Remove this organisation, its roles and its posts? This cannot be undone.')) return;
+      await send('POST', `/api/admin/orgs/${id}/remove`);
+      toast('Organisation removed');
+      loadAdminOrgs($('#org-q')?.value.trim() || '');
     } else if (action === 'logout') {
       await send('POST', '/auth/logout');
       await loadMe();
