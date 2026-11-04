@@ -1,0 +1,12 @@
+__DOMAIN__ {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# The Node app listens only on localhost.
+	reverse_proxy 127.0.0.1:3000
+}

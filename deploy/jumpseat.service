@@ -1,0 +1,25 @@
+[Unit]
+Description=Jumpseat web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jumpseat
+Group=jumpseat
+WorkingDirectory=/opt/jumpseat
+EnvironmentFile=/etc/jumpseat.env
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/node server.js
+Restart=on-failure
+RestartSec=3
+
+# Hardening: the system is read-only to the app; it may only write its data folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/jumpseat/data
+
+[Install]
+WantedBy=multi-user.target

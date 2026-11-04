@@ -149,6 +149,10 @@ These are not done yet:
 - **Check the name.** "Jumpseat" is a working name. Search for trademark and app-store conflicts before launch. Don't use the Roblox name or logo in the brand.
 - **Add real content rules.** Write terms of use and a community guideline, and make sure the report flow works for each post.
 
+## Free launch
+
+The deploy kit in `deploy/` runs Jumpseat on one free Linux VM with automatic HTTPS: `setup.sh`, a systemd service, a Caddy site, nightly backups and an update script. See `deploy/README.md` for the host options, the accounts you need to create, and the limits.
+
 ## Layout
 
 ```
