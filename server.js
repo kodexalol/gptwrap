@@ -229,7 +229,7 @@ function page(title, inner) {
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body class="center">
-<main class="glass card-page">${inner}</main>
+<main class="card-page">${inner}</main>
 </body>
 </html>`;
 }

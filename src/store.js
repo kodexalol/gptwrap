@@ -3,102 +3,94 @@
 const fs = require('fs');
 const path = require('path');
 
-const SEED_TIME = '2026-01-01T00:00:00.000Z';
+const hoursAgo = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
 
 // Sample content so the site is not empty on first run.
-// Anything marked sample: true is fake and exists only for local development.
+// Everything here is fake and exists only for local development and screenshots.
 function seed() {
+  const airline = (id, slug, name, description, verified, createdAt) => ({
+    id,
+    slug,
+    name,
+    description,
+    robloxGroupId: null,
+    verified,
+    ownerUserId: null,
+    ownerRobloxId: null,
+    createdByUserId: null,
+    discordInvite: null,
+    discordWebhook: null,
+    sample: true,
+    createdAt,
+  });
+  const job = (id, airlineId, title, role, description, createdAt) => ({
+    id,
+    airlineId,
+    title,
+    role,
+    description,
+    open: true,
+    createdAt,
+  });
+  const user = (id, username, displayName, bio, createdAt) => ({
+    id,
+    robloxUserId: null,
+    username,
+    displayName,
+    bio,
+    createdAt,
+  });
+  const post = (id, authorType, airlineId, authorUserId, body, tags, h) => ({
+    id,
+    authorType,
+    airlineId,
+    authorUserId,
+    body,
+    imageUrl: null,
+    tags,
+    hidden: false,
+    createdAt: hoursAgo(h),
+  });
+
+  const created = hoursAgo(24 * 60);
   return {
-    users: [],
+    users: [
+      user('user-maya', 'maya_flies', 'Maya', 'First Officer in training. Coffee first, then flights.', created),
+      user('user-kai', 'kai_taxi', 'Kai', 'Ground ops at Harbor Jet. Ask me about the gate board.', created),
+    ],
     sessions: [],
     airlines: [
-      {
-        id: 'air-northwind',
-        slug: 'northwind-air',
-        name: 'Northwind Air',
-        description: 'Sample regional airline for local testing.',
-        robloxGroupId: null,
-        verified: true,
-        ownerUserId: null,
-        ownerRobloxId: null,
-        createdByUserId: null,
-        discordInvite: null,
-        discordWebhook: null,
-        sample: true,
-        createdAt: SEED_TIME,
-      },
-      {
-        id: 'air-harbor',
-        slug: 'harbor-jet',
-        name: 'Harbor Jet',
-        description: 'Sample short-haul carrier with a small fleet.',
-        robloxGroupId: null,
-        verified: true,
-        ownerUserId: null,
-        ownerRobloxId: null,
-        createdByUserId: null,
-        discordInvite: null,
-        discordWebhook: null,
-        sample: true,
-        createdAt: SEED_TIME,
-      },
+      airline('air-northwind', 'northwind-air', 'Northwind Air', 'Regional network across the Harbor Coast. Two-pilot operations, paid training.', true, created),
+      airline('air-harbor', 'harbor-jet', 'Harbor Jet', 'Short-haul carrier with fast turns and friendly crews.', true, created),
+      airline('air-cobalt', 'cobalt-regional', 'Cobalt Regional', 'Small-fleet regional carrier, growing its crew team this season.', true, created),
+      airline('air-skybridge', 'skybridge', 'Skybridge', 'New carrier, still waiting on verification.', false, created),
     ],
     jobs: [
-      {
-        id: 'job-first-officer',
-        airlineId: 'air-northwind',
-        title: 'First Officer',
-        role: 'pilot',
-        description: 'Sample role. Two-pilot operations, flexible hours, training provided.',
-        open: true,
-        createdAt: SEED_TIME,
-      },
-      {
-        id: 'job-flight-attendant',
-        airlineId: 'air-northwind',
-        title: 'Flight Attendant',
-        role: 'cabin-crew',
-        description: 'Sample role. Passenger care and safety briefings.',
-        open: true,
-        createdAt: SEED_TIME,
-      },
-      {
-        id: 'job-gate-agent',
-        airlineId: 'air-harbor',
-        title: 'Gate Agent',
-        role: 'ground',
-        description: 'Sample role. Check-in, boarding and gate duties.',
-        open: true,
-        createdAt: SEED_TIME,
-      },
+      job('job-first-officer', 'air-northwind', 'First Officer', 'pilot', 'Two-pilot operations, flexible rotations, paid type training. Current licence required.', hoursAgo(72)),
+      job('job-flight-attendant', 'air-northwind', 'Flight Attendant', 'cabin-crew', 'Passenger care, safety briefings and inflight service across the Harbor Coast network.', hoursAgo(30)),
+      job('job-dispatcher', 'air-northwind', 'Ground Dispatcher', 'ground', 'Flight planning support and on-time coordination with ground crews.', hoursAgo(10)),
+      job('job-captain', 'air-harbor', 'Captain', 'pilot', 'Short-haul captain role. Strong handling and crew leadership expected.', hoursAgo(48)),
+      job('job-gate-agent', 'air-harbor', 'Gate Agent', 'ground', 'Check-in, boarding and gate duties. Weekend availability a plus.', hoursAgo(6)),
+      job('job-cabin-lead', 'air-cobalt', 'Cabin Crew Lead', 'cabin-crew', 'Lead a small cabin team and run onboarding for new crew.', hoursAgo(120)),
     ],
     applications: [],
     posts: [
-      {
-        id: 'post-sample-1',
-        authorType: 'airline',
-        airlineId: 'air-northwind',
-        authorUserId: null,
-        body: 'Sample post: first flights of the week are on the board. Two pilot seats open. #hiring #pilots',
-        imageUrl: null,
-        tags: ['hiring', 'pilots'],
-        hidden: false,
-        createdAt: SEED_TIME,
-      },
-      {
-        id: 'post-sample-2',
-        authorType: 'airline',
-        airlineId: 'air-harbor',
-        authorUserId: null,
-        body: 'Sample post: new gate team starts Monday. Welcome aboard! #ground #teamwork',
-        imageUrl: null,
-        tags: ['ground', 'teamwork'],
-        hidden: false,
-        createdAt: SEED_TIME,
-      },
+      post('post-1', 'airline', 'air-northwind', null, 'Two pilot seats are open for the winter schedule. Paid training, flexible rotations. Apply from the Jobs tab. #hiring #pilots', ['hiring', 'pilots'], 3),
+      post('post-2', 'user', null, 'user-maya', 'First sim session with the new crew today. The approach into Harbor City was clean. #pilots #training', ['pilots', 'training'], 5),
+      post('post-3', 'airline', 'air-harbor', null, 'New gate team starts Monday. Welcome aboard, everyone. #ground #teamwork', ['ground', 'teamwork'], 9),
+      post('post-4', 'user', null, 'user-kai', 'Boarding got four minutes faster after the new gate layout. Small wins add up. #ground', ['ground'], 14),
+      post('post-5', 'airline', 'air-cobalt', null, 'Route map for next season is up on our Discord. Tell us which city you want next. #routes', ['routes'], 26),
     ],
-    comments: [],
-    likes: [],
+    comments: [
+      { id: 'comment-1', postId: 'post-2', authorUserId: 'user-kai', body: 'Congrats. Hope the crosswind wasn\'t too rough.', createdAt: hoursAgo(4) },
+    ],
+    likes: [
+      { postId: 'post-1', userId: 'user-maya', createdAt: hoursAgo(2) },
+      { postId: 'post-1', userId: 'user-kai', createdAt: hoursAgo(2) },
+      { postId: 'post-2', userId: 'user-kai', createdAt: hoursAgo(4) },
+      { postId: 'post-3', userId: 'user-maya', createdAt: hoursAgo(8) },
+      { postId: 'post-4', userId: 'user-maya', createdAt: hoursAgo(12) },
+    ],
     follows: [],
     reports: [],
   };
