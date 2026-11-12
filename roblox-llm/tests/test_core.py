@@ -148,3 +148,16 @@ async def test_gives_up_after_max_throttles():
     async with _fetcher(handler, max_throttles=3) as fx:
         r = await fx.get("https://h.test/x")
     assert r.status == 429 and r.data is None
+
+
+async def test_snapshot_reports_rate_and_cooldown():
+    def handler(req):
+        return httpx.Response(429, headers={"retry-after": "30"}) if "slow" in req.url.path else httpx.Response(200, json={})
+
+    async with _fetcher(handler, max_throttles=0) as fx:
+        await fx.get("https://h.test/ok")
+        await fx.get("https://h.test/slow")
+        snap = fx.snapshot()
+    h = snap["hosts"]["h.test"]
+    assert snap["stats"]["ok"] == 1 and snap["stats"]["throttled"] == 1
+    assert h["rate"] < h["ceiling"] and 25 < h["cooldown_s"] <= 30 and h["strikes"] == 1

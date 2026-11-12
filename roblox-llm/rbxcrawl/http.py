@@ -153,6 +153,16 @@ class Fetcher:
         if self._client:
             await self._client.aclose()
 
+    def snapshot(self) -> dict:
+        """Counters plus each host's current rate / cooldown, for periodic logging."""
+        now = asyncio.get_running_loop().time()
+        return {
+            "stats": dict(self.stats),
+            "hosts": {h: {"rate": round(l.rate, 2), "ceiling": l.ceiling,
+                          "cooldown_s": round(max(0.0, l._cool - now), 1), "strikes": l._strikes}
+                      for h, l in self._limiters.items()},
+        }
+
     def limiter(self, host: str) -> Limiter:
         if host not in self._limiters:
             self._limiters[host] = Limiter(self.rates.get(host, self.default_rate))

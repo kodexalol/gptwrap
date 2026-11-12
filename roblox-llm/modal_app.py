@@ -62,6 +62,21 @@ async def _committer(stop: asyncio.Event, every: float = 120.0) -> None:
     await vol.commit.aio()
 
 
+async def _stats_logger(fx, stop: asyncio.Event, label: str, every: float = 120.0) -> None:
+    """Print a one-line JSON snapshot every `every` seconds (visible with `modal app logs`)."""
+    last, t0 = 0, time.time()
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            snap = fx.snapshot()
+            n = sum(v for k, v in snap["stats"].items() if k in ("ok", "throttled", "5xx", "neterr") or k.startswith("http_"))
+            snap["req_per_s"] = round((n - last) / every, 2)
+            snap["elapsed_min"] = round((time.time() - t0) / 60, 1)
+            last = n
+            print(f"STATS {label} {json.dumps(snap)}", flush=True)
+
+
 # --------------------------------------------------------------------------- DevForum
 
 @app.function(**COMMON, cpu=0.5, memory=1024, timeout=24 * 3600, retries=RETRY)
@@ -78,6 +93,7 @@ async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, h
     out: dict = {}
     try:
         async with Fetcher(rates={"devforum.roblox.com": rate}, default_rate=rate, concurrency=8) as fx:
+            logger = asyncio.create_task(_stats_logger(fx, stop, "devforum"))
             # 1) discover EVERY category first, so a deadline respawn never leaves one undiscovered.
             if phase in ("discover", "all"):
                 s = dt.date.fromisoformat(start) if start else D.FIRST_DAY
@@ -100,6 +116,8 @@ async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, h
                     if out.get("deadline"):
                         break
             out["http"] = dict(fx.stats)
+            stop.set()
+            await logger
     finally:
         stop.set()
         await commit
@@ -136,11 +154,14 @@ async def github_job(phase: str = "all", rate: float = 2.0, hours: float = 22.0,
     try:
         rates = {"api.github.com": 0.45, "codeload.github.com": rate}
         async with Fetcher(rates=rates, default_rate=rate, concurrency=8) as fx:
+            logger = asyncio.create_task(_stats_logger(fx, stop, "github"))
             if phase in ("discover", "all"):
                 out["discover"] = await asyncio.wait_for(G.discover(fx, token, DATA, queries), hours * 3600)
             if phase in ("fetch", "all"):
                 out["fetch"] = await G.fetch_all(fx, DATA, limit=limit)
             out["http"] = dict(fx.stats)
+            stop.set()
+            await logger
     finally:
         stop.set()
         await commit
