@@ -47,6 +47,8 @@ class Limiter:
         self._cool = 0.0
         self._ok = 0
         self._strikes = 0
+        self._last_cut = -1e9
+        self.cut_grace = 15.0   # one multiplicative decrease per congestion event, not per in-flight request
         self._lock = asyncio.Lock()
 
     async def acquire(self) -> None:
@@ -67,13 +69,19 @@ class Limiter:
             self._ok = 0
 
     def throttle(self, wait: float | None = None) -> float:
+        """Register a slow-down signal. The first signal of an event halves the rate; further signals within
+        `cut_grace` seconds (the other requests that were already in flight) only extend the cooldown.
+        Otherwise a burst of N concurrent responses would cut the rate N times and cost ~25 min to recover."""
+        loop = asyncio.get_running_loop()
+        now = loop.time()
         self._ok = 0
-        self._strikes += 1
-        self.rate = max(self.min_rate, self.rate * 0.5)
+        if now - self._last_cut >= self.cut_grace:
+            self._strikes += 1
+            self.rate = max(self.min_rate, self.rate * 0.5)
+            self._last_cut = now
         w = wait if wait and wait > 0 else min(600.0, 5.0 * 2 ** self._strikes)
         w = min(w, 3600.0)
-        loop = asyncio.get_running_loop()
-        self._cool = max(self._cool, loop.time() + w)
+        self._cool = max(self._cool, now + w)
         return w
 
 

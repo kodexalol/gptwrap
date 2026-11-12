@@ -188,3 +188,15 @@ async def test_persistent_202_returns_202_not_data(monkeypatch):
     async with _fetcher(lambda req: httpx.Response(202)) as fx:
         r = await fx.get("https://h.test/x")
     assert r.status == 202 and r.data is None
+
+
+async def test_burst_of_signals_cuts_the_rate_once_but_a_new_event_cuts_again():
+    from rbxcrawl.http import Limiter
+    lim = Limiter(rate=2.5, min_rate=0.2)
+    for _ in range(8):                      # 8 requests that were already in flight all come back 202
+        lim.throttle(10.0)
+    assert lim.rate == pytest.approx(1.25)  # halved once, not eight times (which would have hit the floor)
+    lim._last_cut -= 60                     # a later, separate event
+    lim.throttle(10.0)
+    assert lim.rate == pytest.approx(0.625)
+    assert lim._cool > 0                    # cooldown still applies to the whole burst
