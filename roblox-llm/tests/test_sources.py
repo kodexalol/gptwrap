@@ -413,3 +413,34 @@ def test_hf_adapters_for_previously_unmatched_schemas():
     assert n("P/luaucoder", {"system_prompt": [], "input_1": "", "output_1": ""}) is None
     r = n("r/min", {"input": "function f(R)local p=1 end", "output": "function f(child)\n\tlocal p = 1\nend"})
     assert r["kind"] == "code" and "\n\tlocal p" in r["text"] and r["meta"]["minified_source_len"] > 0
+
+
+async def test_probe_cuts_requests_but_not_coverage():
+    days = {dt.date(2021, 3, d): 90 for d in range(1, 29)}     # 2520 topics: needs splitting
+    uni = make_universe(days)
+    calls = {"probe": 0, "naive": 0}
+
+    def run(kind):
+        base = search_server(uni)
+
+        def h(req):
+            calls[kind] += 1
+            return base(req)
+        return h
+
+    out_p, out_n, st = {}, {}, {}
+    async with fetcher(run("probe")) as fx:
+        await devforum.enumerate_window(fx, "scripting-support", dt.date(2021, 3, 1), dt.date(2021, 4, 1), out_p, st)
+    async with fetcher(run("naive")) as fx:      # same walk, but never using the probe
+        orig = devforum.search_window
+
+        async def no_probe(*a, **kw):
+            kw["probe"] = False
+            return await orig(*a, **kw)
+        devforum.search_window = no_probe
+        try:
+            await devforum.enumerate_window(fx, "scripting-support", dt.date(2021, 3, 1), dt.date(2021, 4, 1), out_n, {})
+        finally:
+            devforum.search_window = orig
+    assert set(out_p) == set(out_n) == {t["id"] for t in uni}      # identical coverage
+    assert calls["probe"] < 0.75 * calls["naive"]                   # materially fewer requests

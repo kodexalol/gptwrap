@@ -95,8 +95,14 @@ def _slim(t: dict, cat: str) -> dict:
 
 # ----------------------------------------------------------------------------- discovery
 
-async def search_window(fx: Fetcher, cat: str, a: dt.date, b: dt.date, extra: str = "") -> tuple[dict[int, dict], bool]:
-    """All topics created in [a, b). Returns (topics, saturated)."""
+async def search_window(fx: Fetcher, cat: str, a: dt.date, b: dt.date, extra: str = "",
+                        probe: bool = False) -> tuple[dict[int, dict], bool]:
+    """All topics created in [a, b). Returns (topics, saturated).
+
+    With probe=True the last servable page is requested first: if it has results the window holds more
+    than ~450 topics, so we report it saturated immediately instead of paying for pages 1-9 that the
+    caller is about to throw away by splitting the window. Use it only when the window can be split.
+    """
     c = CATEGORIES[cat]
     # A refinement that sets its own min_posts replaces the base one: two min_posts operators in
     # one query is ambiguous (one silently wins) and would make buckets overlap or leave gaps.
@@ -104,6 +110,10 @@ async def search_window(fx: Fetcher, cat: str, a: dt.date, b: dt.date, extra: st
     q = f"{cat_query(cat)} in:first {base_min} after:{a} before:{b} {extra} order:latest"
     q = " ".join(q.split())
     found: dict[int, dict] = {}
+    if probe:
+        r = await fx.get(f"{BASE}/search.json", params={"q": q, "page": MAX_SEARCH_PAGES})
+        if r.ok and (r.data or {}).get("topics"):
+            return found, True
     for page in range(1, MAX_SEARCH_PAGES + 1):
         r = await fx.get(f"{BASE}/search.json", params={"q": q, "page": page})
         if not r.ok:
@@ -121,12 +131,14 @@ async def search_window(fx: Fetcher, cat: str, a: dt.date, b: dt.date, extra: st
 
 
 async def enumerate_window(fx: Fetcher, cat: str, a: dt.date, b: dt.date, out: dict[int, dict], stats: dict) -> None:
-    topics, saturated = await search_window(fx, cat, a, b)
+    span = (b - a).days
+    # Splittable windows are probed cheaply; a single day cannot be split, so it is fetched in full
+    # (keeping its first ~500 topics) before the refinement filters run.
+    topics, saturated = await search_window(fx, cat, a, b, probe=span > 1)
     out.update(topics)
     if not saturated:
         return
     stats["saturated"] = stats.get("saturated", 0) + 1
-    span = (b - a).days
     if span > 1:
         mid = a + dt.timedelta(days=span // 2)
         await enumerate_window(fx, cat, a, mid, out, stats)
