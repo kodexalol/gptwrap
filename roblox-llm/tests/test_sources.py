@@ -479,3 +479,16 @@ async def test_repair_retries_only_transient_failures(tmp_path):
     assert rep["missing"] == 2 and rep["records"] == 2
     assert {r["key"] for r in iter_records(tmp_path / "devforum" / "raw")} == {"t/1", "t/3", "t/4"}
     assert devforum.missing_topics(tmp_path, "scripting-support") == []
+
+
+def test_fetch_plan_orders_by_value_and_splits_scripting_support():
+    mk = lambda n, solved: [{"id": i, "solved": i < solved, "posts": 3} for i in range(n)]
+    fr = {"scripting-support": mk(2300, 1100), "code-review": mk(300, 0), "release-notes": mk(40, 0),
+          "engine-bugs": mk(900, 0), "studio-bugs": mk(800, 0), "community-resources": mk(700, 0)}
+    plan = devforum.fetch_plan(fr)
+    assert plan == [("release-notes", 0, None), ("code-review", 0, None), ("community-resources", 0, None),
+                    ("scripting-support", 0, 3),                       # 1100 solved -> 3 chunks of 500
+                    ("studio-bugs", 0, None), ("engine-bugs", 0, None),
+                    ("scripting-support", 3, None)]
+    assert devforum.fetch_plan({"code-review": mk(10, 0)}) == [("code-review", 0, None)]
+    assert devforum.fetch_plan({"engine-bugs": mk(10, 0)}) == [("engine-bugs", 0, None)]

@@ -100,17 +100,22 @@ async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, h
                 e = dt.date.fromisoformat(end) if end else None
                 for cat in cats:
                     out[f"{cat}/discover"] = await D.discover(fx, cat, DATA, s, e)
-            # 2) fetch the small, high-value categories (code review, tutorials) before the 230k-topic one.
+            # 2) retry anything that failed transiently in earlier runs FIRST (they are the most valuable
+            #    topics: the first chunks of each category are the solved/long threads), then fetch in
+            #    value order (see devforum.fetch_plan).
             if phase in ("fetch", "all"):
+                for cat in cats:
+                    out[f"{cat}/repair_start"] = await D.repair(fx, cat, DATA)
                 frontier = {c: D.value_order(D.load_frontier(DATA, c)) for c in cats}
-                for cat in sorted(cats, key=lambda c: len(frontier[c])):
-                    out[f"{cat}/repair_start"] = await D.repair(fx, cat, DATA)   # retry transient failures first
+                for cat, first, last in D.fetch_plan(frontier):
                     topics = frontier[cat][:limit] if limit else frontier[cat]
-                    for i in range(0, len(topics), D.CHUNK):
+                    n_chunks = -(-len(topics) // D.CHUNK)
+                    for ci in range(first, min(last if last is not None else n_chunks, n_chunks)):
                         if time.time() > deadline:
                             out["deadline"] = True
                             break
-                        res = await D.fetch_partition(fx, topics[i:i + D.CHUNK], cat, DATA, f"{i // D.CHUNK:05d}")
+                        part = topics[ci * D.CHUNK:(ci + 1) * D.CHUNK]
+                        res = await D.fetch_partition(fx, part, cat, DATA, f"{ci:05d}")
                         for k, v in res.items():
                             if isinstance(v, int):
                                 out[f"{cat}/{k}"] = out.get(f"{cat}/{k}", 0) + v

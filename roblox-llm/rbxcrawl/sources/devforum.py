@@ -403,3 +403,32 @@ async def repair(fx: Fetcher, cat: str, data_dir: str | Path, limit: int = 5000)
         return {"missing": 0}
     res = await fetch_partition(fx, todo, cat, data_dir, "repair")
     return {"missing": len(todo), **res}
+
+
+# ----------------------------------------------------------------------------- fetch order
+
+BUG_CATS = ("studio-bugs", "engine-bugs")
+
+
+def fetch_plan(frontier: dict[str, list[dict]], chunk: int = CHUNK) -> list[tuple[str, int, int | None]]:
+    """Order of work as (category, first_chunk, end_chunk_exclusive | None), best value per request first:
+
+      1. small, dense categories (docs, release notes, tutorials, code review, ...), smallest first
+      2. the solved head of scripting-support (topics are value-ordered, solved first)
+      3. bug reports (original post only, lower value than answered questions)
+      4. the unsolved tail of scripting-support
+
+    With the crawl time-capped and the rate limited, the tail is the part most likely to be cut.
+    """
+    big = "scripting-support"
+    small = sorted((c for c in frontier if c != big and c not in BUG_CATS), key=lambda c: len(frontier[c]))
+    plan: list[tuple[str, int, int | None]] = [(c, 0, None) for c in small]
+    head = None
+    if big in frontier:
+        n_solved = sum(1 for t in frontier[big] if t.get("solved"))
+        head = -(-n_solved // chunk)
+        plan.append((big, 0, head))
+    plan += [(c, 0, None) for c in BUG_CATS if c in frontier]
+    if big in frontier:
+        plan.append((big, head, None))
+    return plan
