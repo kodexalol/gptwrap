@@ -21,7 +21,7 @@ def _fetcher(args, **rates) -> Fetcher:
 
 
 async def cmd_devforum(args) -> None:
-    cats = args.cats.split(",") if args.cats else list(devforum.CATEGORIES)
+    cats = devforum.resolve_cats(args.cats)
     async with _fetcher(args, **{DEVFORUM_HOST: args.rate}) as fx:
         for cat in cats:
             if args.phase in ("discover", "all"):
@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> None:
 
     d = sub.add_parser("devforum"); net(d, 2.5)
     d.add_argument("phase", choices=["discover", "fetch", "all"])
-    d.add_argument("--cats", help=f"comma list of {list(devforum.CATEGORIES)}")
+    d.add_argument("--cats", help=f"'tier2', 'all', or comma list of {list(devforum.CATEGORIES)} (default: tier 1)")
     d.add_argument("--start"); d.add_argument("--end")
     d.add_argument("--parallel", type=int, default=3); d.add_argument("--chunk", type=int, default=500)
     d.add_argument("--limit", type=int)

@@ -1,5 +1,6 @@
 import datetime as dt
 import io
+import json
 import re
 import tarfile
 
@@ -350,3 +351,65 @@ async def test_fetch_partition_marker_is_bound_to_chunk_contents(tmp_path):
         r3 = await devforum.fetch_partition(fx, b, "scripting-support", tmp_path, "00000")   # different content: runs
     assert r1["records"] == 2 and r2 == {"skipped": True} and r3["records"] == 2
     assert {r["key"] for r in iter_records(tmp_path / "devforum" / "raw")} == {"t/1", "t/2", "t/3", "t/4"}
+
+
+def test_resolve_cats():
+    assert devforum.resolve_cats("") == devforum.TIER1 and "engine-bugs" not in devforum.TIER1
+    assert devforum.resolve_cats("tier2") == devforum.TIER2
+    assert devforum.resolve_cats("all") == devforum.TIER1 + devforum.TIER2
+    assert devforum.resolve_cats("code-review, engine-bugs") == ["code-review", "engine-bugs"]
+    with pytest.raises(ValueError):
+        devforum.resolve_cats("nope")
+    assert all(c in devforum.CATEGORIES for c in devforum.TIER1 + devforum.TIER2)
+
+
+def test_extract_repo_caps_total_bytes(tmp_path):
+    p = tmp_path / "r.tar.gz"
+    build_tar(p, {f"src/f{i}.lua": "x = 1\n" * 40_000 for i in range(10)})   # ~240 KB each
+    repo = {"full_name": "o/r", "stars": 1, "license": None, "pushed_at": "", "topics": []}
+    recs = github.extract_repo(str(p), repo, max_total_bytes=600_000)
+    assert 1 <= sum(r["kind"] == "code" for r in recs) <= 3
+
+
+async def test_github_fetch_all_markers_bound_to_chunk_contents(tmp_path):
+    good = tmp_path / "g.tar.gz"
+    build_tar(good, {"a.luau": "print(1)\n", "default.project.json": "{}"})
+    blob = good.read_bytes()
+    data = tmp_path / "data"
+
+    def write_repos(names):
+        d = data / "github" / "repos"
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "q.jsonl", "w") as f:
+            for n in names:
+                f.write(json.dumps({"full_name": n, "stars": 1, "fork": False, "archived": False, "size_kb": 10,
+                                    "branch": "main", "license": "MIT", "pushed_at": "", "topics": []}) + "\n")
+
+    async with fetcher(lambda req: httpx.Response(200, content=blob)) as fx:
+        write_repos(["o/a", "o/b"])
+        t1 = await github.fetch_all(fx, data, chunk=2)
+        t2 = await github.fetch_all(fx, data, chunk=2)                     # identical: nothing to redo
+        write_repos(["o/c", "o/d"])                                        # different repos, same chunk index
+        t3 = await github.fetch_all(fx, data, chunk=2)
+    assert t1["records"] > 0 and t2 == {} and t3["records"] == t1["records"]
+
+
+def test_hf_adapters_for_previously_unmatched_schemas():
+    # regression: these five datasets (about 190k rows) produced zero records in the first full import
+    n = hf.normalize_row
+    r = n("k/luau_github", {"file_path": "awesome\\.config\\helpers.lua", "repo_name": "o/dotfiles", "repo_description": "d",
+                            "file_content": "local a = 1", "license": "The MIT License (MIT)\n\nCopyright"})
+    assert r["kind"] == "code" and r["meta"]["path"] == "awesome/.config/helpers.lua" and r["meta"]["license"] == "The MIT License (MIT)"
+    r = n("T/RobloxQA", {"grounding_doc_id": "docs/x.md", "question": "Which property holds code?", "answer": "Source",
+                         "incorrect_0": "Code", "incorrect_1": "Text", "incorrect_2": "Content"})
+    assert r["kind"] == "instruct" and r["meta"]["completion"] == "Source" and r["meta"]["distractors"] == ["Code", "Text", "Content"]
+    r = n("T/Leet", {"problem_description": "Two sum", "starter_code": "local function twoSum()", "solution": "return {}",
+                     "test": "-- jest", "difficulty": "Easy", "tags": ["Array"]})
+    assert r["kind"] == "instruct" and "local function twoSum()" in r["meta"]["prompt"] and r["meta"]["difficulty"] == "Easy"
+    r = n("P/luaucoder", {"system_prompt": ["You are an expert."], "input_1": "make tracer", "reasoning_1": " think ", "output_1": " ```lua\nx\n``` ",
+                          "input_2": "thanks", "reasoning_2": "", "output_2": "welcome"})
+    assert r["kind"] == "chat" and [m["role"] for m in r["meta"]["messages"]] == ["system", "user", "assistant", "user", "assistant"]
+    assert r["meta"]["reasoning"] == ["think", ""]
+    assert n("P/luaucoder", {"system_prompt": [], "input_1": "", "output_1": ""}) is None
+    r = n("r/min", {"input": "function f(R)local p=1 end", "output": "function f(child)\n\tlocal p = 1\nend"})
+    assert r["kind"] == "code" and "\n\tlocal p" in r["text"] and r["meta"]["minified_source_len"] > 0

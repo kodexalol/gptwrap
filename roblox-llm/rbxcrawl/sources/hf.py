@@ -50,6 +50,43 @@ def normalize_row(ds: str, row: dict) -> dict | None:
                     roblox_repo=str(row.get("from_roblox_flagged_repo")).lower() == "true")
         return make_record(src, "code", f"{repo}:{path}", text, **meta)
 
+    if {"file_content", "file_path"} <= cols:  # kefir090/luau_github-style scrape (license is full text)
+        lic = _s(row.get("license")).strip().splitlines()
+        repo, path = _s(row.get("repo_name")), _s(row["file_path"]).replace("\\", "/")
+        return make_record(src, "code", f"{repo}:{path}", _s(row["file_content"]), repo=repo, path=path,
+                           license=(lic[0][:60] if lic else None), description=_s(row.get("repo_description")) or None)
+
+    if {"question", "answer", "incorrect_0"} <= cols:  # RobloxQA: multiple choice grounded in the docs
+        q, a = _s(row["question"]), _s(row["answer"])
+        wrong = [_s(row[k]) for k in sorted(c for c in cols if c.startswith("incorrect_"))]
+        return make_record(src, "instruct", q[:200], f"{q}\n\n{a}", prompt=q, completion=a, distractors=wrong,
+                           grounding_doc=_s(row.get("grounding_doc_id")) or None)
+
+    if {"problem_description", "solution"} <= cols:  # LuauLeetcode
+        p = _s(row["problem_description"]) + (("\n\n" + _s(row["starter_code"])) if _s(row.get("starter_code")) else "")
+        c = _s(row["solution"])
+        return make_record(src, "instruct", p[:200] + c[:100], f"{p}\n\n{c}", prompt=p, completion=c,
+                           tests=_s(row.get("test")), difficulty=_s(row.get("difficulty")) or None, tags=row.get("tags"))
+
+    if "input_1" in cols and "output_1" in cols:  # Pinkstack luaucoder: multi-turn with separate reasoning columns
+        sys_p = row.get("system_prompt")
+        sys_p = "\n".join(map(_s, sys_p)) if isinstance(sys_p, list) else _s(sys_p)
+        msgs, reasoning = ([{"role": "system", "content": sys_p}] if sys_p.strip() else []), []
+        i = 1
+        while _s(row.get(f"input_{i}")).strip() and _s(row.get(f"output_{i}")).strip():
+            msgs.append({"role": "user", "content": _s(row[f"input_{i}"]).strip()})
+            msgs.append({"role": "assistant", "content": _s(row[f"output_{i}"]).strip()})
+            reasoning.append(_s(row.get(f"reasoning_{i}")).strip())
+            i += 1
+        if i == 1:
+            return None
+        text, norm = _render_chat(msgs)
+        return make_record(src, "chat", text[:300], text, messages=norm, reasoning=reasoning)
+
+    if cols == {"input", "output"}:  # renvx0/Luau-Minified: minified input -> readable output; keep the readable side
+        out = _s(row["output"])
+        return make_record(src, "code", out[:300], out, minified_source_len=len(_s(row["input"])))
+
     if {"prompt", "completion"} <= cols and len(cols) <= 3:  # Roblox/luau_corpus fragments
         text = _s(row["prompt"]) + _s(row["completion"])
         return make_record(src, "code", text[:200], text, fragment=True)

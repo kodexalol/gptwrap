@@ -35,6 +35,33 @@ CATEGORIES: dict[str, dict] = {
     "community-tutorials": dict(id=46, parent="resources", kind="doc", min_posts=1),
     "community-resources": dict(id=74, parent="resources", kind="doc", min_posts=1),
 }
+# Tier 2: only crawled on request (`--cats tier2`/`all`), after tier 1 has proven worthwhile.
+CATEGORIES.update({
+    "release-notes": dict(id=62, parent="updates", kind="doc", min_posts=1),
+    "announcements": dict(id=36, parent="updates", kind="doc", min_posts=1),
+    "documentation-issues": dict(id=72, parent="bug-reports", kind="doc", min_posts=1),
+    "engine-bugs": dict(id=28, parent="bug-reports", kind="doc", min_posts=2),
+    "studio-bugs": dict(id=29, parent="bug-reports", kind="doc", min_posts=2),
+})
+TIER1 = ["scripting-support", "code-review", "community-tutorials", "community-resources"]
+TIER2 = ["release-notes", "announcements", "documentation-issues", "engine-bugs", "studio-bugs"]
+
+
+def resolve_cats(spec: str | None) -> list[str]:
+    """'' -> tier 1; 'tier2'; 'all'; or a comma list of category slugs."""
+    if not spec:
+        return list(TIER1)
+    if spec == "tier2":
+        return list(TIER2)
+    if spec == "all":
+        return TIER1 + TIER2
+    cats = [c.strip() for c in spec.split(",") if c.strip()]
+    bad = [c for c in cats if c not in CATEGORIES]
+    if bad:
+        raise ValueError(f"unknown categories {bad}; known: {list(CATEGORIES)}")
+    return cats
+
+
 # Single-day windows that still saturate are split by these extra filters.
 REFINEMENTS = [
     "status:solved",

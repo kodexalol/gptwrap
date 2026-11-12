@@ -154,10 +154,11 @@ def _skip_path(parts: list[str]) -> bool:
     return any(p.lower() in SKIP_DIRS for p in parts[:-1])
 
 
-def extract_repo(tar_path: str, repo: dict, max_files: int = 4000) -> list[dict]:
+def extract_repo(tar_path: str, repo: dict, max_files: int = 4000, max_total_bytes: int = 25_000_000) -> list[dict]:
     """Records for the Luau files, plus one README/doc record with the file tree."""
     full = repo["full_name"]
     files: list[tuple[str, str]] = []
+    total = 0
     tree: list[str] = []
     readme = ""
     project_markers: set[str] = set()
@@ -180,11 +181,12 @@ def extract_repo(tar_path: str, repo: dict, max_files: int = 4000) -> list[dict]
                 continue
             if not low.endswith(KEEP_EXT) or low.endswith(".min.lua") or _skip_path(parts):
                 continue
-            if m.size == 0 or m.size > MAX_FILE or len(files) >= max_files:
+            if m.size == 0 or m.size > MAX_FILE or len(files) >= max_files or total + m.size > max_total_bytes:
                 continue
             raw = tf.extractfile(m).read()
             if b"\x00" in raw[:2048]:
                 continue
+            total += len(raw)
             files.append((rel, raw.decode("utf-8", "replace")))
     roblox_repo = bool(project_markers) or "roblox" in " ".join(repo.get("topics") or []).lower()
     base_meta = dict(repo=full, stars=repo.get("stars"), license=repo.get("license"),
@@ -229,10 +231,11 @@ async def fetch_all(fx: Fetcher, data_dir: str | Path, chunk: int = 100, concurr
     totals: dict[str, int] = {}
     sem = asyncio.Semaphore(concurrency)
     for i in range(0, len(repos), chunk):
-        name = f"{i // chunk:05d}"
+        part = repos[i:i + chunk]
+        # Bind the marker to the exact repos in this chunk (see devforum.fetch_partition for why).
+        name = f"{i // chunk:05d}-{sha1(','.join(r['full_name'] for r in part))[:8]}"
         if is_done(mdir, name):
             continue
-        part = repos[i:i + chunk]
         counts: dict[str, int] = {}
         recs: list[dict] = []
 

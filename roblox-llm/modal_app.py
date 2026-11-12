@@ -190,9 +190,28 @@ def status_job() -> dict:
         if raw.exists():
             out[src] = {"shards": len(list(raw.glob("*.jsonl.zst"))), **{k: v for k, v in pipeline.summarize(raw).items()
                                                                        if k in ("records", "est_tokens")}}
-    mdir = root / "devforum" / "markers"
-    if mdir.exists():
-        out["devforum_markers"] = {d.name: len(list(d.glob("*.done"))) for d in mdir.iterdir() if d.is_dir()}
+    # Sum the numeric fields of every finished-partition marker: gives topics discovered, records kept,
+    # filtered/403 counts per category without downloading anything.
+    out["markers"] = {}
+    for src in ("devforum", "github"):
+        mroot = root / src / "markers"
+        if mroot.exists():
+            for d in sorted(p for p in mroot.iterdir() if p.is_dir()):
+                tot: dict = {}
+                n = 0
+                for f in d.glob("*.done"):
+                    try:
+                        j = json.loads(f.read_text())
+                    except ValueError:
+                        continue
+                    n += 1
+                    for k, v in j.items():
+                        if isinstance(v, (int, float)) and not isinstance(v, bool):
+                            tot[k] = tot.get(k, 0) + v
+                out["markers"][f"{src}/{d.name}"] = {"partitions": n, **tot}
+    repos = root / "github" / "repos"
+    if repos.exists():
+        out["github_repo_files"] = len(list(repos.glob("*.jsonl")))
     if (root / "clean").exists():
         out["clean"] = {k: v for k, v in pipeline.summarize(root / "clean").items() if k != "tokens_by_source"}
     return out
@@ -248,7 +267,7 @@ def main(job: str = "smoke", cats: str = "", rate: float = 2.5, hours: float = 2
          datasets: str = "", max_rows: int = 0, min_quality: float = 0.0, exact_only: bool = False,
          start: str = "", end: str = "", wait: bool = False):
     from rbxcrawl.sources import devforum as D
-    cat_list = cats.split(",") if cats else list(D.CATEGORIES)
+    cat_list = D.resolve_cats(cats)
     if job == "smoke":
         print(json.dumps(smoke_job.remote(), indent=1))
     elif job == "rbxapi":
@@ -262,7 +281,11 @@ def main(job: str = "smoke", cats: str = "", rate: float = 2.5, hours: float = 2
     elif job == "github-smoke":
         print(json.dumps(github_smoke_job.remote(), indent=1))
     elif job == "github":
-        print(json.dumps(github_job.remote("all", 2.0, hours, limit or None), indent=1))
+        args = ("all", 2.0, hours, limit or None)
+        if wait:
+            print(json.dumps(github_job.remote(*args), indent=1))
+        else:
+            print("spawned github_job:", github_job.spawn(*args).object_id)
     elif job == "hf":
         args = (datasets.split(",") if datasets else None, max_rows or None)
         if wait:
