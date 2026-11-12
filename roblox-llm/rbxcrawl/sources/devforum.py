@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ..htmlmd import html_to_md
 from ..http import Fetcher
-from ..records import ShardWriter, is_done, make_record, mark_done
+from ..records import ShardWriter, is_done, make_record, mark_done, sha1
 
 log = logging.getLogger("rbxcrawl.devforum")
 
@@ -159,6 +159,14 @@ async def discover(fx: Fetcher, cat: str, data_dir: str | Path, start: dt.date =
     return totals
 
 
+CHUNK = 500
+
+
+def value_order(topics: list[dict]) -> list[dict]:
+    """Most valuable first (solved, then longer threads), so stopping early still keeps the best data."""
+    return sorted(topics, key=lambda t: (not t.get("solved"), -(t.get("posts") or 0), t["id"]))
+
+
 def load_frontier(data_dir: str | Path, cat: str) -> list[dict]:
     seen, out = set(), []
     for p in sorted((Path(data_dir) / "devforum" / "frontier" / cat).glob("*.jsonl")):
@@ -265,6 +273,9 @@ async def fetch_partition(fx: Fetcher, topics: list[dict], cat: str, data_dir: s
                           name: str, concurrency: int = 8) -> dict:
     root = Path(data_dir) / "devforum"
     mdir = root / "markers" / f"fetch-{cat}"
+    # The marker name carries a signature of the exact topic ids in this chunk. A chunk index alone is
+    # unsafe: if the frontier or ordering ever changes, "chunk 3" would silently refer to different topics.
+    name = f"{name}-{sha1(','.join(str(t['id']) for t in topics))[:8]}"
     if is_done(mdir, name):
         return {"skipped": True}
     sem = asyncio.Semaphore(concurrency)
@@ -287,10 +298,9 @@ async def fetch_partition(fx: Fetcher, topics: list[dict], cat: str, data_dir: s
     return {"records": len(recs), **counts}
 
 
-async def fetch_all(fx: Fetcher, cat: str, data_dir: str | Path, chunk: int = 500,
-                    min_value: bool = True, limit: int | None = None) -> dict:
-    topics = load_frontier(data_dir, cat)
-    topics.sort(key=lambda t: t["id"])
+async def fetch_all(fx: Fetcher, cat: str, data_dir: str | Path, chunk: int = CHUNK,
+                    limit: int | None = None) -> dict:
+    topics = value_order(load_frontier(data_dir, cat))
     if limit:
         topics = topics[:limit]
     totals: dict[str, int] = {}

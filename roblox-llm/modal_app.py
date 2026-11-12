@@ -64,17 +64,6 @@ async def _committer(stop: asyncio.Event, every: float = 120.0) -> None:
 
 # --------------------------------------------------------------------------- DevForum
 
-def _devforum_remaining(cats: list[str]) -> int:
-    from rbxcrawl.sources import devforum as D
-    from pathlib import Path
-    left = 0
-    for cat in cats:
-        n = len(D.load_frontier(DATA, cat))
-        done = len(list((Path(DATA) / "devforum" / "markers" / f"fetch-{cat}").glob("*.done")))
-        left += max(0, -(-n // 500) - done)
-    return left
-
-
 @app.function(**COMMON, cpu=0.5, memory=1024, timeout=24 * 3600, retries=RETRY)
 async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, hours: float = 22.0,
                        start: str | None = None, end: str | None = None, limit: int | None = None) -> dict:
@@ -89,26 +78,33 @@ async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, h
     out: dict = {}
     try:
         async with Fetcher(rates={"devforum.roblox.com": rate}, default_rate=rate, concurrency=8) as fx:
-            for cat in cats:
-                if phase in ("discover", "all"):
-                    s = dt.date.fromisoformat(start) if start else D.FIRST_DAY
-                    e = dt.date.fromisoformat(end) if end else None
+            # 1) discover EVERY category first, so a deadline respawn never leaves one undiscovered.
+            if phase in ("discover", "all"):
+                s = dt.date.fromisoformat(start) if start else D.FIRST_DAY
+                e = dt.date.fromisoformat(end) if end else None
+                for cat in cats:
                     out[f"{cat}/discover"] = await D.discover(fx, cat, DATA, s, e)
-                if phase in ("fetch", "all"):
-                    topics = sorted(D.load_frontier(DATA, cat), key=lambda t: (not t["solved"], -(t["posts"] or 0), t["id"]))
-                    if limit:
-                        topics = topics[:limit]
-                    for i in range(0, len(topics), 500):
+            # 2) fetch the small, high-value categories (code review, tutorials) before the 230k-topic one.
+            if phase in ("fetch", "all"):
+                frontier = {c: D.value_order(D.load_frontier(DATA, c)) for c in cats}
+                for cat in sorted(cats, key=lambda c: len(frontier[c])):
+                    topics = frontier[cat][:limit] if limit else frontier[cat]
+                    for i in range(0, len(topics), D.CHUNK):
                         if time.time() > deadline:
+                            out["deadline"] = True
                             break
-                        await D.fetch_partition(fx, topics[i:i + 500], cat, DATA, f"{i // 500:05d}")
+                        res = await D.fetch_partition(fx, topics[i:i + D.CHUNK], cat, DATA, f"{i // D.CHUNK:05d}")
+                        for k, v in res.items():
+                            if isinstance(v, int):
+                                out[f"{cat}/{k}"] = out.get(f"{cat}/{k}", 0) + v
+                    if out.get("deadline"):
+                        break
             out["http"] = dict(fx.stats)
     finally:
         stop.set()
         await commit
-    # Self-chain when the time budget ran out before the work did.
-    if phase in ("fetch", "all") and not limit and time.time() > deadline:
-        devforum_job.spawn(cats, "fetch", rate, hours)
+    if out.get("deadline"):  # time budget ran out before the work did: continue in a fresh container
+        devforum_job.spawn(cats, "fetch", rate, hours, None, None, limit)
         out["respawned"] = True
     return out
 
@@ -250,7 +246,7 @@ async def smoke_job() -> dict:
 @app.local_entrypoint()
 def main(job: str = "smoke", cats: str = "", rate: float = 2.5, hours: float = 22.0, limit: int = 0,
          datasets: str = "", max_rows: int = 0, min_quality: float = 0.0, exact_only: bool = False,
-         start: str = "", end: str = ""):
+         start: str = "", end: str = "", wait: bool = False):
     from rbxcrawl.sources import devforum as D
     cat_list = cats.split(",") if cats else list(D.CATEGORIES)
     if job == "smoke":
@@ -258,13 +254,21 @@ def main(job: str = "smoke", cats: str = "", rate: float = 2.5, hours: float = 2
     elif job == "rbxapi":
         print(rbxapi_job.remote())
     elif job == "devforum":
-        print(devforum_job.remote(cat_list, "all", rate, hours, start or None, end or None, limit or None))
+        args = (cat_list, "all", rate, hours, start or None, end or None, limit or None)
+        if wait:
+            print(devforum_job.remote(*args))
+        else:  # run with `modal run --detach`: the call keeps running after this client exits
+            print("spawned devforum_job:", devforum_job.spawn(*args).object_id)
     elif job == "github-smoke":
         print(json.dumps(github_smoke_job.remote(), indent=1))
     elif job == "github":
         print(json.dumps(github_job.remote("all", 2.0, hours, limit or None), indent=1))
     elif job == "hf":
-        print(json.dumps(hf_job.remote(datasets.split(",") if datasets else None, max_rows or None), indent=1))
+        args = (datasets.split(",") if datasets else None, max_rows or None)
+        if wait:
+            print(json.dumps(hf_job.remote(*args), indent=1))
+        else:
+            print("spawned hf_job:", hf_job.spawn(*args).object_id)
     elif job == "build":
         print(json.dumps(build_job.remote(min_quality, 1e9, not exact_only), indent=1))
     elif job == "status":

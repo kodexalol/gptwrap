@@ -327,3 +327,26 @@ async def test_discover_is_resumable_and_skips_finished_windows(tmp_path):
     assert first["topics"] == 50 and first["windows"] == 2
     assert second["skipped"] == 2 and second["windows"] == 0 and calls["n"] == n_first  # no new requests
     assert {t["id"] for t in devforum.load_frontier(tmp_path, "scripting-support")} == {t["id"] for t in uni}
+
+
+def test_value_order_puts_solved_and_long_threads_first():
+    ts = [{"id": 1, "solved": False, "posts": 9}, {"id": 2, "solved": True, "posts": 2},
+          {"id": 3, "solved": True, "posts": 7}, {"id": 4, "solved": False, "posts": 3}]
+    assert [t["id"] for t in devforum.value_order(ts)] == [3, 2, 1, 4]
+
+
+async def test_fetch_partition_marker_is_bound_to_chunk_contents(tmp_path):
+    # regression: a stale "chunk 00000" marker (e.g. from a --limit smoke run) must not skip a different chunk 00000
+    def handler(req):
+        tid = int(req.url.path.split("/")[2].split(".")[0])
+        posts = [post(1, f"<p>question {tid}</p>"), post(2, "<p>" + "an answer " * 30 + "</p>")]
+        return httpx.Response(200, json={"id": tid, "title": f"t{tid}", "post_stream": {"posts": posts, "stream": [101, 102]}})
+
+    a = [{"id": 1}, {"id": 2}]
+    b = [{"id": 3}, {"id": 4}]
+    async with fetcher(handler) as fx:
+        r1 = await devforum.fetch_partition(fx, a, "scripting-support", tmp_path, "00000")
+        r2 = await devforum.fetch_partition(fx, a, "scripting-support", tmp_path, "00000")   # same content: skipped
+        r3 = await devforum.fetch_partition(fx, b, "scripting-support", tmp_path, "00000")   # different content: runs
+    assert r1["records"] == 2 and r2 == {"skipped": True} and r3["records"] == 2
+    assert {r["key"] for r in iter_records(tmp_path / "devforum" / "raw")} == {"t/1", "t/2", "t/3", "t/4"}
