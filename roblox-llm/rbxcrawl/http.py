@@ -208,17 +208,18 @@ class Fetcher:
                     return Resp(r.status_code, None, dict(r.headers), url)
                 continue  # the limiter's cooldown makes the next acquire() sleep
             if r.status_code == 202:
-                # "Accepted" is never the data we asked for. Seen in production as short bursts on topic
-                # requests: wait a little longer each time and retry, without changing the rate.
+                # An empty-bodied 202 from the load balancer (server: awselb) is bot-defense, not data.
+                # Treat it like a 429: slow down (halve the rate, growing cooldown), then retry a few times.
+                # We never try to answer the challenge; if it persists we give up and let `repair` retry later.
                 self.stats["http_202"] += 1
                 if len(self.samples) < 5:
                     self.samples.append({"status": 202, "url": str(r.url), "body": r.text[:200],
                                          "headers": {k: v for k, v in r.headers.items()
                                                      if k.lower() in ("retry-after", "content-type", "server", "cf-ray", "x-discourse-route")}})
                 soft += 1
+                lim.throttle(_wait_hint(r) or 10.0 * soft)
                 if soft > self.soft_retries:
                     return Resp(202, None, dict(r.headers), url)
-                await asyncio.sleep(3.0 * 2 ** (soft - 1) * (0.5 + random.random()))
                 continue
             if r.status_code >= 500:
                 self.stats["5xx"] += 1
