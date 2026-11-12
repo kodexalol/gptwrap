@@ -104,6 +104,7 @@ async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, h
             if phase in ("fetch", "all"):
                 frontier = {c: D.value_order(D.load_frontier(DATA, c)) for c in cats}
                 for cat in sorted(cats, key=lambda c: len(frontier[c])):
+                    out[f"{cat}/repair_start"] = await D.repair(fx, cat, DATA)   # retry transient failures first
                     topics = frontier[cat][:limit] if limit else frontier[cat]
                     for i in range(0, len(topics), D.CHUNK):
                         if time.time() > deadline:
@@ -115,6 +116,7 @@ async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, h
                                 out[f"{cat}/{k}"] = out.get(f"{cat}/{k}", 0) + v
                     if out.get("deadline"):
                         break
+                    out[f"{cat}/repair_end"] = await D.repair(fx, cat, DATA)
             out["http"] = dict(fx.stats)
             stop.set()
             await logger
@@ -200,7 +202,8 @@ def build_job(min_quality: float = 0.0, max_deprecated_per_kb: float = 1e9, near
 
 
 @app.function(**COMMON, cpu=1, memory=2048, timeout=3600)
-def status_job() -> dict:
+def status_job(deep: bool = False) -> dict:
+    """Fast by default: shard counts/sizes + marker sums. `deep` decompresses every shard (slow on big data)."""
     from pathlib import Path
     from rbxcrawl import pipeline
     vol.reload()
@@ -209,8 +212,10 @@ def status_job() -> dict:
     for src in ("devforum", "github", "rbxapi", "hf"):
         raw = root / src / "raw"
         if raw.exists():
-            out[src] = {"shards": len(list(raw.glob("*.jsonl.zst"))), **{k: v for k, v in pipeline.summarize(raw).items()
-                                                                       if k in ("records", "est_tokens")}}
+            shards = list(raw.glob("*.jsonl.zst"))
+            out[src] = {"shards": len(shards), "gb": round(sum(f.stat().st_size for f in shards) / 1e9, 2)}
+            if deep:
+                out[src].update({k: v for k, v in pipeline.summarize(raw).items() if k in ("records", "est_tokens")})
     # Sum the numeric fields of every finished-partition marker: gives topics discovered, records kept,
     # filtered/403 counts per category without downloading anything.
     out["markers"] = {}
@@ -234,7 +239,8 @@ def status_job() -> dict:
     if repos.exists():
         out["github_repo_files"] = len(list(repos.glob("*.jsonl")))
     if (root / "clean").exists():
-        out["clean"] = {k: v for k, v in pipeline.summarize(root / "clean").items() if k != "tokens_by_source"}
+        rep = root / "clean" / "report.json"
+        out["clean"] = json.loads(rep.read_text()) if rep.exists() else {"note": "no report yet"}
     return out
 
 
@@ -316,6 +322,6 @@ def main(job: str = "smoke", cats: str = "", rate: float = 2.5, hours: float = 2
     elif job == "build":
         print(json.dumps(build_job.remote(min_quality, 1e9, not exact_only), indent=1))
     elif job == "status":
-        print(json.dumps(status_job.remote(), indent=1))
+        print(json.dumps(status_job.remote(deep=wait), indent=1))   # --wait => deep (slow) record counts
     else:
         raise SystemExit(f"unknown job {job!r}")

@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import pytest
 
@@ -161,3 +162,28 @@ async def test_snapshot_reports_rate_and_cooldown():
     h = snap["hosts"]["h.test"]
     assert snap["stats"]["ok"] == 1 and snap["stats"]["throttled"] == 1
     assert h["rate"] < h["ceiling"] and 25 < h["cooldown_s"] <= 30 and h["strikes"] == 1
+
+
+async def test_202_is_retried_with_backoff_samples_kept_and_rate_untouched(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(202, text="queued") if calls["n"] <= 2 else httpx.Response(200, json={"ok": 1})
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda s: real_sleep(0))
+    async with _fetcher(handler) as fx:
+        r = await fx.get("https://h.test/t/1.json")
+        snap = fx.snapshot()
+    assert r.ok and r.data == {"ok": 1} and calls["n"] == 3
+    assert snap["stats"]["http_202"] == 2 and snap["samples"][0]["body"] == "queued"
+    assert snap["hosts"]["h.test"]["rate"] == snap["hosts"]["h.test"]["ceiling"]   # not treated as throttling
+
+
+async def test_persistent_202_returns_202_not_data(monkeypatch):
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda s: real_sleep(0))
+    async with _fetcher(lambda req: httpx.Response(202)) as fx:
+        r = await fx.get("https://h.test/x")
+    assert r.status == 202 and r.data is None

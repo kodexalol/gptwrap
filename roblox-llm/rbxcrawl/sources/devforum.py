@@ -321,18 +321,26 @@ async def fetch_partition(fx: Fetcher, topics: list[dict], cat: str, data_dir: s
     counts: dict[str, int] = {}
     recs: list[dict] = []
 
-    async def one(t: dict) -> None:
+    outcomes: dict[str, list[int]] = {}
+
+    async def one_tracked(t: dict) -> None:
         async with sem:
             rec, why = await fetch_thread(fx, t["id"], cat)
         counts[why] = counts.get(why, 0) + 1
         if rec:
             recs.append(rec)
+        else:
+            outcomes.setdefault(why, []).append(t["id"])
 
-    await asyncio.gather(*(one(t) for t in topics))
+    await asyncio.gather(*(one_tracked(t) for t in topics))
     recs.sort(key=lambda r: r["key"])
     with ShardWriter(root / "raw", f"{cat}-{name}") as w:
         for r in recs:
             w.write(r)
+    if outcomes:  # which topics produced no record, and why: lets `repair` retry only transient failures
+        od = root / "outcomes"
+        od.mkdir(parents=True, exist_ok=True)
+        (od / f"{cat}-{name}.json").write_text(json.dumps(outcomes))
     mark_done(mdir, name, records=len(recs), **counts)
     return {"records": len(recs), **counts}
 
@@ -350,3 +358,48 @@ async def fetch_all(fx: Fetcher, cat: str, data_dir: str | Path, chunk: int = CH
                 totals[k] = totals.get(k, 0) + v
         log.info("fetch %s chunk %d/%d %s", cat, i // chunk + 1, -(-len(topics) // chunk), res)
     return totals
+
+
+# ----------------------------------------------------------------------------- repair
+
+PERMANENT = ("filtered", "http_403", "http_404", "http_410")   # the topic was reached; retrying will not help
+MAX_ATTEMPTS = 3
+
+
+def _done_chunk_topics(data_dir: str | Path, cat: str, chunk: int = CHUNK) -> list[dict]:
+    """Topics belonging to chunks that were already marked done (i.e. attempted at least once)."""
+    topics = value_order(load_frontier(data_dir, cat))
+    mdir = Path(data_dir) / "devforum" / "markers" / f"fetch-{cat}"
+    out = []
+    for i in range(0, len(topics), chunk):
+        part = topics[i:i + chunk]
+        sig = sha1(",".join(str(t["id"]) for t in part))[:8]
+        if is_done(mdir, f"{i // chunk:05d}-{sig}"):
+            out.extend(part)
+    return out
+
+
+def missing_topics(data_dir: str | Path, cat: str) -> list[dict]:
+    """Attempted topics that have no record and no permanent outcome, fewer than MAX_ATTEMPTS tries so far."""
+    from ..records import iter_records
+    root = Path(data_dir) / "devforum"
+    present = {r["key"] for r in iter_records(root / "raw") if r["meta"].get("category") == cat} if (root / "raw").exists() else set()
+    tries: dict[int, int] = {}
+    permanent: set[int] = set()
+    for f in (root / "outcomes").glob(f"{cat}-*.json") if (root / "outcomes").exists() else []:
+        for why, ids in json.loads(f.read_text()).items():
+            for i in ids:
+                tries[i] = tries.get(i, 0) + 1
+                if why in PERMANENT:
+                    permanent.add(i)
+    return [t for t in _done_chunk_topics(data_dir, cat)
+            if f"t/{t['id']}" not in present and t["id"] not in permanent and tries.get(t["id"], 0) + 1 < MAX_ATTEMPTS]
+
+
+async def repair(fx: Fetcher, cat: str, data_dir: str | Path, limit: int = 5000) -> dict:
+    """Re-fetch topics that failed transiently (e.g. HTTP 202 bursts) in chunks already marked done."""
+    todo = missing_topics(data_dir, cat)[:limit]
+    if not todo:
+        return {"missing": 0}
+    res = await fetch_partition(fx, todo, cat, data_dir, "repair")
+    return {"missing": len(todo), **res}

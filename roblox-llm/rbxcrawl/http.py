@@ -134,6 +134,8 @@ class Fetcher:
         self._sem: asyncio.Semaphore | None = None
         self._client: httpx.AsyncClient | None = None
         self.stats: collections.Counter = collections.Counter()
+        self.samples: list[dict] = []   # first few unusual responses (status, body), for diagnosis
+        self.soft_retries = 3
 
     async def __aenter__(self) -> "Fetcher":
         self._sem = asyncio.Semaphore(self.concurrency)
@@ -158,6 +160,7 @@ class Fetcher:
         now = asyncio.get_running_loop().time()
         return {
             "stats": dict(self.stats),
+            "samples": self.samples[:3],
             "hosts": {h: {"rate": round(l.rate, 2), "ceiling": l.ceiling,
                           "cooldown_s": round(max(0.0, l._cool - now), 1), "strikes": l._strikes}
                       for h, l in self._limiters.items()},
@@ -183,6 +186,7 @@ class Fetcher:
         lim = self.limiter(urlsplit(url).netloc)
         attempt = 0
         throttles = 0
+        soft = 0
         while True:
             attempt += 1
             await lim.acquire()
@@ -203,6 +207,19 @@ class Fetcher:
                 if throttles > self.max_throttles:
                     return Resp(r.status_code, None, dict(r.headers), url)
                 continue  # the limiter's cooldown makes the next acquire() sleep
+            if r.status_code == 202:
+                # "Accepted" is never the data we asked for. Seen in production as short bursts on topic
+                # requests: wait a little longer each time and retry, without changing the rate.
+                self.stats["http_202"] += 1
+                if len(self.samples) < 5:
+                    self.samples.append({"status": 202, "url": str(r.url), "body": r.text[:200],
+                                         "headers": {k: v for k, v in r.headers.items()
+                                                     if k.lower() in ("retry-after", "content-type", "server", "cf-ray", "x-discourse-route")}})
+                soft += 1
+                if soft > self.soft_retries:
+                    return Resp(202, None, dict(r.headers), url)
+                await asyncio.sleep(3.0 * 2 ** (soft - 1) * (0.5 + random.random()))
+                continue
             if r.status_code >= 500:
                 self.stats["5xx"] += 1
                 if attempt >= self.max_attempts:

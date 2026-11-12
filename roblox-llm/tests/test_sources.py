@@ -444,3 +444,38 @@ async def test_probe_cuts_requests_but_not_coverage():
             devforum.search_window = orig
     assert set(out_p) == set(out_n) == {t["id"] for t in uni}      # identical coverage
     assert calls["probe"] < 0.75 * calls["naive"]                   # materially fewer requests
+
+
+async def test_repair_retries_only_transient_failures(tmp_path):
+    state = {"phase": 1}
+    permanent = {2: 403}      # topic 2 is private: never retry
+    flaky = {3, 4}            # topics 3 and 4 return 202 on the first pass
+
+    def handler(req):
+        tid = int(req.url.path.split("/")[2].split(".")[0])
+        if tid in permanent:
+            return httpx.Response(permanent[tid])
+        if tid in flaky and state["phase"] == 1:
+            return httpx.Response(202)
+        posts = [post(1, f"<p>question {tid}</p>"), post(2, "<p>" + "an answer " * 30 + "</p>")]
+        return httpx.Response(200, json={"id": tid, "title": f"t{tid}", "post_stream": {"posts": posts, "stream": [101, 102]}})
+
+    topics = [{"id": i, "solved": True, "posts": 5} for i in (1, 2, 3, 4)]
+    (tmp_path / "devforum" / "frontier" / "scripting-support").mkdir(parents=True)
+    with open(tmp_path / "devforum" / "frontier" / "scripting-support" / "w.jsonl", "w") as f:
+        for t in topics:
+            f.write(json.dumps(t) + "\n")
+
+    fx_ctx = fetcher(handler)
+    fx_ctx.soft_retries = 0                         # make 202s fail fast in the test
+    async with fx_ctx as fx:
+        res = await devforum.fetch_partition(fx, devforum.value_order(devforum.load_frontier(tmp_path, "scripting-support")),
+                                             "scripting-support", tmp_path, "00000")
+        assert res["records"] == 1 and res["http_202"] == 2 and res["http_403"] == 1
+        missing = {t["id"] for t in devforum.missing_topics(tmp_path, "scripting-support")}
+        assert missing == {3, 4}                    # 403 is permanent, 1 is present
+        state["phase"] = 2                          # the server recovers
+        rep = await devforum.repair(fx, "scripting-support", tmp_path)
+    assert rep["missing"] == 2 and rep["records"] == 2
+    assert {r["key"] for r in iter_records(tmp_path / "devforum" / "raw")} == {"t/1", "t/3", "t/4"}
+    assert devforum.missing_topics(tmp_path, "scripting-support") == []
