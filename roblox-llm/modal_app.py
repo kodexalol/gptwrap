@@ -136,6 +136,18 @@ async def devforum_job(cats: list[str], phase: str = "all", rate: float = 2.5, h
 
 # --------------------------------------------------------------------------- others
 
+@app.function(**COMMON, cpu=0.5, memory=1024, timeout=12 * 3600, retries=RETRY)
+async def creatorhub_job(rate: float = 1.5, limit: int | None = None) -> dict:
+    from rbxcrawl.http import Fetcher
+    from rbxcrawl.sources import creatorhub
+    await vol.reload.aio()
+    async with Fetcher(rates={"create.roblox.com": rate}, default_rate=rate, concurrency=4) as fx:
+        out = await creatorhub.run(fx, DATA, limit=limit)
+        out["http"] = dict(fx.stats)
+    await vol.commit.aio()
+    return out
+
+
 @app.function(**COMMON, cpu=0.25, memory=512, timeout=1800)
 async def rbxapi_job() -> dict:
     from rbxcrawl.http import Fetcher
@@ -197,7 +209,8 @@ def build_job(min_quality: float = 0.0, max_deprecated_per_kb: float = 1e9, near
     vol.reload()
     root = Path(DATA)
     # Priority order: first copy wins in dedup, so our own crawls come before bulk imports.
-    inputs = [p for p in (root / "devforum" / "raw", root / "github" / "raw", root / "rbxapi" / "raw", root / "hf" / "raw") if p.exists()]
+    inputs = [p for p in (root / "creatorhub" / "raw", root / "devforum" / "raw", root / "github" / "raw",
+                          root / "rbxapi" / "raw", root / "hf" / "raw") if p.exists()]
     cfg = filters.Config(min_quality=min_quality, max_deprecated_per_kb=max_deprecated_per_kb)
     rep_f = pipeline.run_filter(inputs, root / "filtered", cfg, workers=8)
     rep_d = pipeline.run_dedup([root / "filtered"], root / "clean", near=near)
@@ -214,7 +227,7 @@ def status_job(deep: bool = False) -> dict:
     vol.reload()
     root = Path(DATA)
     out: dict = {}
-    for src in ("devforum", "github", "rbxapi", "hf"):
+    for src in ("creatorhub", "devforum", "github", "rbxapi", "hf"):
         raw = root / src / "raw"
         if raw.exists():
             shards = list(raw.glob("*.jsonl.zst"))
@@ -304,6 +317,12 @@ def main(job: str = "smoke", cats: str = "", rate: float = 2.5, hours: float = 2
         print(json.dumps(smoke_job.remote(), indent=1))
     elif job == "rbxapi":
         print(rbxapi_job.remote())
+    elif job == "creatorhub":
+        args = (1.5, limit or None)
+        if wait:
+            print(json.dumps(creatorhub_job.remote(*args), indent=1))
+        else:
+            print("spawned creatorhub_job:", creatorhub_job.spawn(*args).object_id)
     elif job == "devforum":
         args = (cat_list, "all", rate, hours, start or None, end or None, limit or None)
         if wait:

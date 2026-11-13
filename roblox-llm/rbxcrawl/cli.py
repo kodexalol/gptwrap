@@ -11,7 +11,7 @@ import sys
 
 from . import filters, pipeline
 from .http import Fetcher
-from .sources import devforum, github, hf, rbxapi
+from .sources import creatorhub, devforum, github, hf, rbxapi
 
 DEVFORUM_HOST = "devforum.roblox.com"
 
@@ -45,6 +45,12 @@ async def cmd_github(args) -> None:
         if args.phase in ("fetch", "all"):
             print("fetch", await github.fetch_all(fx, args.data, args.chunk, args.concurrency,
                                                  min_stars=args.min_stars, limit=args.limit))
+        print("http stats:", dict(fx.stats))
+
+
+async def cmd_creatorhub(args) -> None:
+    async with Fetcher(rates={"create.roblox.com": args.rate}, default_rate=args.rate, concurrency=args.concurrency) as fx:
+        print(await creatorhub.run(fx, args.data, limit=args.limit))
         print("http stats:", dict(fx.stats))
 
 
@@ -111,6 +117,9 @@ def main(argv: list[str] | None = None) -> None:
 
     a = sub.add_parser("rbxapi"); net(a, 2.0)
 
+    c = sub.add_parser("creatorhub"); net(c, 1.5)
+    c.add_argument("--limit", type=int)
+
     h = sub.add_parser("hf")
     h.add_argument("--data", default="data"); h.add_argument("--datasets"); h.add_argument("--inventory", default="inventory.json")
     h.add_argument("--max-rows", type=int)
@@ -136,6 +145,8 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(cmd_github(args))
     elif args.cmd == "rbxapi":
         asyncio.run(cmd_rbxapi(args))
+    elif args.cmd == "creatorhub":
+        asyncio.run(cmd_creatorhub(args))
     else:
         {"hf": cmd_hf, "filter": cmd_filter, "dedup": cmd_dedup, "stats": cmd_stats}[args.cmd](args)
 
