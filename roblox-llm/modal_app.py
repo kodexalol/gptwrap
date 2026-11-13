@@ -325,7 +325,11 @@ def main(job: str = "smoke", cats: str = "", rate: float = 2.5, hours: float = 2
         else:
             print("spawned hf_job:", hf_job.spawn(*args).object_id)
     elif job == "build":
-        print(json.dumps(build_job.remote(min_quality, 1e9, not exact_only), indent=1))
+        args = (min_quality, 1e9, not exact_only)
+        if wait:
+            print(json.dumps(build_job.remote(*args), indent=1))
+        else:  # long CPU job: spawn so `modal run --detach` returns immediately
+            print("spawned build_job:", build_job.spawn(*args).object_id)
     elif job == "status":
         print(json.dumps(status_job.remote(deep=wait), indent=1))   # --wait => deep (slow) record counts
     else:
